@@ -1,91 +1,75 @@
-TARGET = kernel.elf
-ISO = muxos.iso
+# Toolchain -------------------------------------------------------------------
+CC            := $(shell command -v i686-elf-gcc 2>/dev/null || echo i686-elf-gcc)
+NASM          := $(shell command -v nasm 2>/dev/null || echo nasm)
+GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo grub-mkrescue)
+QEMU          := $(shell command -v qemu-system-i386 2>/dev/null || echo qemu-system-i386)
+
+BUILD   := build
+KERNEL  := $(BUILD)/kernel.elf
+ISO     := $(BUILD)/muxos.iso
+ISO_DIR := $(BUILD)/isodir
+
+CPPFLAGS := -I. -Iarch/x86 -Iarch/x86/include \
+            -Ikernel -Ikernel/lib -Ikernel/mm -Ikernel/task \
+            -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video \
+            -Iuser/bin -Iuser/lib
+CFLAGS   := -m32 -ffreestanding -fno-builtin -fno-pic -O0 -g \
+            -Wall -Wextra -MMD -MP
+LDFLAGS  := -m32 -T linker.ld -ffreestanding -nostdlib
+QEMUFLAGS ?= -display cocoa,zoom-to-fit=on
+
+# userlib.c currently includes user/bin/shell.c directly, so shell.c must not
+# be compiled separately. minishell is not linked into the kernel image yet.
+KERNEL_C_SRCS   := $(shell find arch kernel drivers -type f -name '*.c' | sort)
+KERNEL_ASM_SRCS := $(shell find arch -type f -name '*.s' | sort)
+USER_C_SRCS     := user/lib/userlib.c
+USER_ASM_SRCS   := user/crt/user_crt.s
+
+C_SRCS   := $(KERNEL_C_SRCS) $(USER_C_SRCS)
+ASM_SRCS := $(KERNEL_ASM_SRCS) $(USER_ASM_SRCS)
+OBJS     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS)) \
+            $(patsubst %.s,$(BUILD)/%.o,$(ASM_SRCS))
+DEPS     := $(OBJS:.o=.d)
+
+.DEFAULT_GOAL := all
+.PHONY: all run clean print-sources
 
 all: $(ISO)
 
-boot.o: boot.s
-	nasm -f elf32 boot.s -o boot.o
+$(BUILD)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-switch.o: switch.s
-	nasm -f elf32 switch.s -o switch.o
+$(BUILD)/%.o: %.s
+	@mkdir -p $(@D)
+	$(NASM) -f elf32 $< -o $@
 
-user_entry.o: user_entry.s
-	nasm -f elf32 user_entry.s -o user_entry.o
+# Interrupt code cannot rely on SSE register state.
+$(BUILD)/drivers/input/keyboard.o: CFLAGS += -mgeneral-regs-only
 
-user_prog.o: user_prog.s
-	nasm -f elf32 user_prog.s -o user_prog.o
+$(KERNEL): $(OBJS) linker.ld
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
-user_task.o: user_task.c
-	gcc -m32 -ffreestanding -fno-builtin -fno-pic -c user_task.c -o user_task.o
-
-user_start.o: user_start.s
-	nasm -f elf32 user_start.s -o user_start.o
-
-user_simple.o: user_simple.s
-	nasm -f elf32 user_simple.s -o user_simple.o
-
-user_prog_c.o: user_prog_c.s
-	nasm -f elf32 user_prog_c.s -o user_prog_c.o
-
-userlib.o: userlib.c
-	gcc -m32 -ffreestanding -fno-builtin -fno-pic -O0 -c userlib.c -o userlib.o
-
-user_crt.o: user_crt.s
-	nasm -f elf32 user_crt.s -o user_crt.o
-
-kernel.o: kernel.c vga.h
-	gcc -m32 -ffreestanding -fno-builtin -c kernel.c -o kernel.o
-
-vga.o: vga.c vga.h
-	gcc -m32 -ffreestanding -fno-builtin -c vga.c -o vga.o
-
-gdt.o: gdt.c gdt.h
-	gcc -m32 -ffreestanding -fno-builtin -c gdt.c -o gdt.o
-
-idt.o: idt.c idt.h isr.c
-	gcc -m32 -ffreestanding -fno-builtin -c idt.c -o idt.o
-
-isr.o: isr.c
-	gcc -m32 -ffreestanding -fno-builtin -c isr.c -o isr.o
-
-pic.o: pic.c pic.h io.h
-	gcc -m32 -ffreestanding -fno-builtin -c pic.c -o pic.o
-
-keyboard.o: keyboard.c keyboard.h pic.h io.h vga.h
-	gcc -m32 -ffreestanding -fno-builtin -mgeneral-regs-only -c keyboard.c -o keyboard.o
-
-console.o: console.c console.h vga.h
-	gcc -m32 -ffreestanding -fno-builtin -c console.c -o console.o
-
-pmm.o: pmm.c pmm.h
-	gcc -m32 -ffreestanding -fno-builtin -c pmm.c -o pmm.o
-
-vmm.o: vmm.c vmm.h pmm.h
-	gcc -m32 -ffreestanding -fno-builtin -c vmm.c -o vmm.o
-
-serial.o: serial.c serial.h io.h
-	gcc -m32 -ffreestanding -fno-builtin -c serial.c -o serial.o
-
-process.o: process.c process.h 
-	gcc -m32 -ffreestanding -fno-builtin -c process.c -o process.o
-
-syscall.o: syscall.c syscall.h
-	gcc -m32 -ffreestanding -fno-builtin -c syscall.c -o syscall.o
-
-tss.o: tss.c tss.h gdt.h
-	gcc -m32 -ffreestanding -fno-builtin -c tss.c -o tss.o
-
-$(TARGET): boot.o kernel.o vga.o gdt.o idt.o isr.o pic.o keyboard.o console.o pmm.o vmm.o serial.o process.o switch.o syscall.o tss.o user_entry.o user_crt.o userlib.o linker.ld
-	gcc -m32 -T linker.ld -o $(TARGET) -ffreestanding -nostdlib boot.o kernel.o vga.o gdt.o idt.o isr.o pic.o keyboard.o console.o pmm.o vmm.o serial.o process.o switch.o syscall.o tss.o user_entry.o user_crt.o userlib.o
-
-$(ISO): $(TARGET)
-	mkdir -p iso/boot/grub
-	cp $(TARGET) iso/boot/
-	printf 'set timeout=1\nset default=0\nmenuentry "MuxOS" { multiboot /boot/$(TARGET) }\n' > iso/boot/grub/grub.cfg
-	grub-mkrescue -o $(ISO) iso
+$(ISO): $(KERNEL)
+	@mkdir -p $(ISO_DIR)/boot/grub
+	cp $(KERNEL) $(ISO_DIR)/boot/kernel.elf
+	printf '%s\n' \
+		'set timeout=1' \
+		'set default=0' \
+		'set gfxmode=1024x768x32' \
+		'set gfxpayload=1024x768x32' \
+		'menuentry "MuxOS" { multiboot /boot/kernel.elf }' \
+		> $(ISO_DIR)/boot/grub/grub.cfg
+	$(GRUB_MKRESCUE) -o $@ $(ISO_DIR)
 
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -serial stdio -display gtk
+	$(QEMU) $(QEMUFLAGS) -cdrom $(ISO)
+
 clean:
-	rm -f *.o $(TARGET) $(ISO)
-	rm -rf iso
+	rm -rf $(BUILD)
+
+print-sources:
+	@printf '%s\n' $(C_SRCS) $(ASM_SRCS)
+
+-include $(DEPS)

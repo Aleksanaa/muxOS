@@ -1,0 +1,20 @@
+# Keep clangd's editor diagnostics aligned with the include paths in Makefile.
+CompileFlags:
+  Add:
+    - -m32
+    - -ffreestanding
+    - -fno-builtin
+    - -fno-pic
+    - -I.
+    - -Iarch/x86
+    - -Iarch/x86/include
+    - -Ikernel
+    - -Ikernel/lib
+    - -Ikernel/mm
+    - -Ikernel/task
+    - -Idrivers/input
+    - -Idrivers/platform
+    - -Idrivers/serial
+    - -Idrivers/video
+    - -Iuser/bin
+    - -Iuser/lib
