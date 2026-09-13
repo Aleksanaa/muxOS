@@ -1,5 +1,6 @@
 #include "syscall.h"
 #include "console.h"
+#include "gdt.h"
 #include "process.h"
 #include "../../drivers/input/keyboard.h"
 #include "../../drivers/platform/reboot.h"
@@ -10,6 +11,10 @@
 #include <stdint.h>
 
 static struct file **cur_fds(void) { return processes[current].fds; }
+
+/* Anonymous mmap region: a simple bump allocator over the user address space. */
+#define USER_MMAP_BASE 0x30000000u
+static uint32_t mmap_next = USER_MMAP_BASE;
 
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp) {
@@ -193,6 +198,31 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
       return -1;
     return fdalloc(cur_fds(), filedup(f));
   }
+
+  case SYS_MMAP: {
+    /* mmap(addr, len, prot, flags, fd, off) - only anonymous is supported. */
+    uint32_t len = ecx;
+    if (len == 0)
+      return -1;
+    uint32_t pages = (len + 0xFFFu) / 0x1000u;
+    uint32_t base = mmap_next;
+    for (uint32_t i = 0; i < pages; i++) {
+      uint32_t va = base + i * 0x1000u;
+      if (!vmm_alloc_at(va))
+        return -1;
+      kmemset((void *)(uintptr_t)va, 0, 0x1000);
+    }
+    mmap_next = base + pages * 0x1000u;
+    return (int)base;
+  }
+
+  case SYS_MUNMAP:
+    /* The bump allocator never reuses memory; treat unmap as a no-op. */
+    return 0;
+
+  case SYS_SET_TLS:
+    gdt_set_tls_base(ebx);
+    return 0;
 
   case SYS_SETUID:
   case SYS_GETUID:

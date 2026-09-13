@@ -12,6 +12,7 @@ enter_usermode:
     mov ds, dx
     mov es, dx
     mov fs, dx
+    mov dx, 0x33        ; user TLS selector (%gs base = TCB)
     mov gs, dx
 
     push 0x23           ; SS

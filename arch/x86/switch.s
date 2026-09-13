@@ -143,6 +143,7 @@ irq0_stub:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov ax, 0x33        ; 用户 TLS 选择子（%gs base 由 set_thread_area 设置）
     mov gs, ax
 
 .done:
@@ -154,6 +155,7 @@ irq0_stub:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov ax, 0x33
     mov gs, ax
 .segments_restored:
     popa ; pop 寄存器
@@ -318,7 +320,12 @@ syscall_stub:
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
+    mov bx, 0x10
+    test dword [esp + 36], 3
+    jz .return_gs_ready
+    mov bx, 0x33
+.return_gs_ready:
+    mov gs, bx
     popa
     iret
 
@@ -379,6 +386,7 @@ process_enter:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov ax, 0x33
     mov gs, ax
 .ke:
     popa
@@ -401,6 +409,7 @@ process_jump:
     mov ds, ax
     mov es, ax
     mov fs, ax
+    mov ax, 0x33
     mov gs, ax
 .jump_kernel:
     popa

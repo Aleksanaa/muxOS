@@ -1,7 +1,7 @@
 #include "gdt.h"
 #include "vga.h"
 
-static struct gdt_entry gdt[6];
+static struct gdt_entry gdt[7];
 static struct gdt_ptr gp;
 
 /*
@@ -33,6 +33,10 @@ void gdt_set(int i, unsigned int base, unsigned int limit, unsigned int access,
   gdt[i].access = access;
 }
 
+void gdt_set_tls_base(unsigned int base) {
+  gdt_set(6, base, 0xFFFFFFFF, 0xF2, 0xCF);
+}
+
 void gdt_init() {
   gp.limit = sizeof(gdt) - 1;
   gp.base = (unsigned int)(unsigned long)&gdt;
@@ -43,6 +47,7 @@ void gdt_init() {
   gdt_set(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // 用户代码段  选择子 0x1B（RPL=3）
   gdt_set(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // 用户数据段  选择子 0x23（RPL=3）
   gdt_set(5, 0, 0, 0, 0);                // TSS 占位，由 tss_init() 填写
+  gdt_set(6, 0, 0xFFFFFFFF, 0xF2, 0xCF); // TLS 数据段  选择子 0x33（base 可变）
 
   asm volatile("lgdt %0" : : "m"(gp));
 
