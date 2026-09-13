@@ -375,6 +375,71 @@ int sys_get_process_count(void) {
   asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_GET_PROCESS_COUNT));
   return ret;
 }
+
+int sys_open(const char *path, int flags) {
+  int ret;
+  asm volatile("int $0x80"
+               : "=a"(ret)
+               : "a"(SYS_OPEN), "b"(path), "c"(flags));
+  return ret;
+}
+
+int sys_close(int fd) {
+  int ret;
+  asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_CLOSE), "b"(fd));
+  return ret;
+}
+
+int sys_lseek(int fd, int offset, int whence) {
+  int ret;
+  asm volatile("int $0x80"
+               : "=a"(ret)
+               : "a"(SYS_LSEEK), "b"(fd), "c"(offset), "d"(whence));
+  return ret;
+}
+
+int sys_stat(const char *path, struct stat *st) {
+  int ret;
+  asm volatile("int $0x80"
+               : "=a"(ret)
+               : "a"(SYS_STAT), "b"(path), "c"(st));
+  return ret;
+}
+
+int sys_fstat(int fd, struct stat *st) {
+  int ret;
+  asm volatile("int $0x80"
+               : "=a"(ret)
+               : "a"(SYS_FSTAT), "b"(fd), "c"(st));
+  return ret;
+}
+
+int sys_mkdir(const char *path) {
+  int ret;
+  asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_MKDIR), "b"(path));
+  return ret;
+}
+
+int sys_unlink(const char *path) {
+  int ret;
+  asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_UNLINK), "b"(path));
+  return ret;
+}
+
+int sys_getdents(int fd, struct dirent *buf, int max) {
+  int ret;
+  asm volatile("int $0x80"
+               : "=a"(ret)
+               : "a"(SYS_GETDENTS), "b"(fd), "c"(buf), "d"(max));
+  return ret;
+}
+
+int sys_dup(int fd) {
+  int ret;
+  asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_DUP), "b"(fd));
+  return ret;
+}
+
 extern char user_c_start;
 void user_main() { init_shell(); }
 extern char user_c_end;

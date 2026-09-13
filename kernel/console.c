@@ -1,6 +1,16 @@
 #include "console.h"
 #include "keyboard.h"
+#include "serial.h"
 #include "vga.h"
+
+/* Wait for a character from either the PS/2 keyboard or COM1. */
+char console_getchar(void) {
+  while (!kb_haschar() && !serial_haschar()) {
+  }
+  if (kb_haschar())
+    return kb_getchar();
+  return serial_getchar();
+}
 
 void readline(char *buf, int max_len) {
   int i = 0;

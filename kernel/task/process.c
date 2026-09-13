@@ -1,5 +1,6 @@
 #include "process.h"
 #include "../lib/string.h"
+#include "fs.h"
 #include "pmm.h"
 #include "tss.h"
 #include "vga.h"
@@ -37,6 +38,7 @@ void process_register_current() {
   processes[0].kernel_stack = 0;
   processes[process_count].state = PROC_RUNNING;
   kstrcpy(processes[0].process_name, "bootstrap");
+  fd_init(processes[0].fds);
   process_count = 1;
 }
 
@@ -108,6 +110,7 @@ void process_create_kernel(void (*entry)()) {
   processes[process_count].kernel_stack = 0;
   processes[process_count].state = PROC_RUNNING;
   kstrcpy(processes[process_count].process_name, "kernel_init");
+  fd_init(processes[process_count].fds);
   process_count++;
 }
 
@@ -172,6 +175,7 @@ void process_create_user(void (*entry)()) {
   processes[process_count].user_stack = user_stack;
   processes[process_count].state = PROC_RUNNING;
   processes[process_count].parent_pid = 0;
+  fd_init(processes[process_count].fds);
   process_count++;
 }
 
@@ -208,6 +212,13 @@ void start_user_process(int pid, char *process_name) {
 
 void process_exit() {
   process_t *p = &processes[current];
+
+  for (int i = 0; i < FD_MAX; i++) {
+    if (p->fds[i]) {
+      fileclose(p->fds[i]);
+      p->fds[i] = 0;
+    }
+  }
 
   if (p->parent_pid > 0) {
     // 有父进程：变成僵尸，唤醒父进程
@@ -418,6 +429,7 @@ int process_fork(uint32_t child_eax_ret) {
   processes[child_idx].user_stack = child_user_stack_top;
   processes[current].state = PROC_RUNNING;
   processes[child_idx].parent_pid = parent_pid;
+  fd_fork(processes[current].fds, processes[child_idx].fds);
   process_count++;
 
   return processes[child_idx].pid;

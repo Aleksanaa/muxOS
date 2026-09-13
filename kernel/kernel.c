@@ -1,5 +1,6 @@
 // kernel.c
 #include "kernel.h"
+#include "fs.h"
 #include "gdt.h"
 #include "idt.h"
 #include "io.h"
@@ -7,6 +8,7 @@
 #include "pic.h"
 #include "pmm.h"
 #include "process.h"
+#include "serial.h"
 #include "tss.h"
 #include "vga.h"
 #include "vmm.h"
@@ -32,9 +34,12 @@ int kernel_main(uint32_t magic, multiboot_info_t *mbi) {
   pic_init();
   pit_init(1000);
   idt_init();
+  serial_init();
   pmm_init(mbi);
   vmm_init();
   keyboard_init();
+  fs_init();
+  fs_selftest();
   process_register_current();
   process_create_kernel(task_kernel_init);
 

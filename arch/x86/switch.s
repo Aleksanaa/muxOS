@@ -16,7 +16,7 @@ extern syscall_kernel_esp
 extern tss_set_kernel_stack
 
 ; process_t 各字段在结构体中的偏移（与 process.h 保持同步）
-PROCESS_SIZE      equ 184 ; sizeof(process_t)
+PROCESS_SIZE      equ 248 ; sizeof(process_t) (guarded by _Static_assert in process.h)
 CTX_ESP_OFF       equ 4   ; offsetof(process_t, ctx.esp)
 STATE_OFF         equ 24  ; offsetof(process_t, state)
 STARTED_OFF       equ 28  ; offsetof(process_t, started)

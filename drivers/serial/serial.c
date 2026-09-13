@@ -19,6 +19,8 @@ char serial_getchar(void) {
     return (char)inb(COM1);
 }
 
+int serial_haschar(void) { return inb(COM1 + 5) & 0x01; }
+
 void serial_putchar(char c) {
     while (!(inb(COM1 + 5) & 0x20)); // 等待发送缓冲区空
     if (c == '\n') {

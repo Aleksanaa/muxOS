@@ -92,3 +92,5 @@ char kb_getchar() {
   kb_tail = (kb_tail + 1) % KB_BUFFER_SIZE;
   return c;
 }
+
+int kb_haschar(void) { return kb_head != kb_tail; }

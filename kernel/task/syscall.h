@@ -31,6 +31,12 @@
 #define SYS_GETPID 21
 #define SYS_GET_PROCESS_INFO 22
 #define SYS_GET_PROCESS_COUNT 23
+#define SYS_LSEEK 24
+#define SYS_STAT 25
+#define SYS_FSTAT 26
+#define SYS_MKDIR 27
+#define SYS_GETDENTS 28
+#define SYS_DUP 29
 void syscall_init();
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 

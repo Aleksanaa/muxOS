@@ -6,6 +6,12 @@
 #define PROC_RUNNING 1
 #define PROC_ZOMBIE 2 // 已退出但父进程还没 wait
 
+#ifndef FD_MAX
+#define FD_MAX 16
+#endif
+
+struct file;
+
 typedef struct {
   uint32_t esp;
   uint32_t ebp;
@@ -26,7 +32,10 @@ typedef struct {
   uint32_t parent_pid; // 父进程 pid
   uint32_t exit_code;  // 退出时存在这里
   char process_name[128];
+  struct file *fds[FD_MAX]; // per-process open file descriptors
 } process_t;
+
+_Static_assert(sizeof(process_t) == 248, "update PROCESS_SIZE in switch.s");
 typedef struct {
   uint32_t pid;
   uint32_t parent_pid;

@@ -1,0 +1,94 @@
+#ifndef FS_H
+#define FS_H
+
+#include "fs_uapi.h"
+#include <stdint.h>
+
+/*
+ * muxOS in-memory filesystem.
+ *
+ * The design is borrowed from xv6 (MIT, Kaashoek/Morris/Cox):
+ * an inode table, directory files containing dirents, readi/writei,
+ * and a global open-file table.  The disk layer is replaced by the
+ * physical page allocator: an inode's "blocks" are physical pages
+ * that pmm_alloc() hands back already identity-mapped, so the kernel
+ * can dereference them directly.  There is no logging, no buffer
+ * cache, no on-disk format and (single CPU) no inode locks.
+ */
+
+#define BSIZE      4096u
+#define NDIRECT    128u
+#define MAXFILE    (NDIRECT * BSIZE)
+#define MAX_INODES 128u
+
+#define ROOTINO 1
+
+#ifndef FD_MAX
+#define FD_MAX 16
+#endif
+
+#define NDEV 4
+#define CONSOLE_MAJOR 1
+#define NULL_MAJOR 2
+
+struct inode {
+  uint32_t inum;
+  int type;
+  int major;
+  int minor;
+  int nlink;
+  uint32_t size;
+  uint32_t addrs[NDIRECT];
+};
+
+struct file {
+  enum { FD_NONE, FD_INODE, FD_DEVICE } type;
+  int ref;
+  int readable;
+  int writable;
+  struct inode *ip;
+  uint32_t off;
+};
+
+struct devsw {
+  int (*read)(void *buf, int n);
+  int (*write)(const void *buf, int n);
+};
+
+extern struct devsw devsw[];
+
+/* memfs: inode + content layer */
+void fs_init(void);
+void fs_selftest(void);
+void devsw_init(void);
+struct inode *iget(uint32_t inum);
+struct inode *ialloc(int type, int major, int minor);
+void itrunc(struct inode *ip);
+void ifree(struct inode *ip);
+int readi(struct inode *ip, void *dst, uint32_t off, uint32_t n);
+int writei(struct inode *ip, const void *src, uint32_t off, uint32_t n);
+int dirlookup(struct inode *dp, const char *name, uint32_t *poff);
+int dirlink(struct inode *dp, const char *name, uint32_t inum);
+int dirunlink(struct inode *dp, const char *name);
+void stati(struct inode *ip, struct stat *st);
+
+/* VFS: paths, open file table, fd table */
+void fileinit(void);
+struct file *filealloc(void);
+struct file *filedup(struct file *f);
+void fileclose(struct file *f);
+int fileread(struct file *f, void *buf, int n);
+int filewrite(struct file *f, const void *buf, int n);
+int filestat(struct file *f, struct stat *st);
+struct inode *namei(const char *path);
+struct inode *nameiparent(const char *path, char *name);
+struct file *vfs_open(const char *path, int flags);
+int vfs_mkdir(const char *path);
+int vfs_unlink(const char *path);
+int fdalloc(struct file **fds, struct file *f);
+struct file *fdget(struct file **fds, int fd);
+void fdclose(struct file **fds, int fd);
+void fd_init(struct file **fds);
+void fd_fork(struct file **parent, struct file **child);
+
+#endif
