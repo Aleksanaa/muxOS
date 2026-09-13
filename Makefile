@@ -33,8 +33,12 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_C_SRCS)) \
 USER_OBJS   := $(patsubst %.c,$(BUILD)/%.o,$(USER_C_SRCS)) \
                $(patsubst %.s,$(BUILD)/%.o,$(USER_ASM_SRCS))
 
-USER_ELF  := $(BUILD)/user.elf
-USER_BLOB := $(BUILD)/user_elf.o
+# USER_ELF can be overridden to embed a prebuilt ELF (e.g. one linked against
+# mlibc).  It is always copied to a fixed path so the objcopy symbol name is
+# stable regardless of where the ELF came from.
+USER_ELF   ?= $(BUILD)/user.elf
+USER_EMBED := $(BUILD)/user_embedded.elf
+USER_BLOB  := $(BUILD)/user_elf.o
 KERNEL_OBJS += $(USER_BLOB)
 
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
@@ -55,13 +59,19 @@ $(BUILD)/%.o: %.s
 # Interrupt code cannot rely on SSE register state.
 $(BUILD)/drivers/input/keyboard.o: CFLAGS += -mgeneral-regs-only
 
-$(USER_ELF): $(USER_OBJS) user/user.ld
+ifeq ($(USER_ELF),$(BUILD)/user.elf)
+$(BUILD)/user.elf: $(USER_OBJS) user/user.ld
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS_USER) -o $@ $(USER_OBJS) -lgcc
+endif
+
+$(USER_EMBED): $(USER_ELF)
+	@mkdir -p $(@D)
+	cp $< $@
 
 # Embed the userland ELF into the kernel image; symbols become
-# _binary_build_user_elf_start/_end and are identity-mapped with the kernel.
-$(USER_BLOB): $(USER_ELF)
+# _binary_build_user_embedded_elf_start/_end and are identity-mapped.
+$(USER_BLOB): $(USER_EMBED)
 	@mkdir -p $(@D)
 	$(OBJCOPY) -I binary -O elf32-i386 -B i386 \
 	  --rename-section .data=.rodata,alloc,load,readonly,data,contents \

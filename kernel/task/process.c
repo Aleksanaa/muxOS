@@ -14,8 +14,8 @@ int process_count = 0;
 extern void enter_usermode(uint32_t entry, uint32_t stack);
 
 /* The userland ELF is embedded in the kernel image by objcopy. */
-extern const uint8_t _binary_build_user_elf_start[];
-extern const uint8_t _binary_build_user_elf_end[];
+extern const uint8_t _binary_build_user_embedded_elf_start[];
+extern const uint8_t _binary_build_user_embedded_elf_end[];
 
 #define USER_STACK_TOP 0x28000000u
 #define USER_STACK_PAGES 16u
@@ -109,9 +109,9 @@ void process_create_kernel(void (*entry)()) {
 void process_create_user(void) {
   extern void print(const char *, unsigned char);
   uint32_t entry = 0;
-  uint32_t elf_size = (uint32_t)(_binary_build_user_elf_end -
-                                 _binary_build_user_elf_start);
-  if (elf_load(_binary_build_user_elf_start, elf_size, &entry) < 0) {
+  uint32_t elf_size = (uint32_t)(_binary_build_user_embedded_elf_end -
+                                 _binary_build_user_embedded_elf_start);
+  if (elf_load(_binary_build_user_embedded_elf_start, elf_size, &entry) < 0) {
     print("elf load failed\n", 0x0C);
     return;
   }
@@ -123,7 +123,30 @@ void process_create_user(void) {
       return;
     }
   }
-  uint32_t user_stack = USER_STACK_TOP;
+  /* Build the initial process stack: argc/argv/envp + a minimal auxv.
+   * mlibc's startup walks the auxv, so AT_NULL must be present or it reads
+   * off the top of the stack. */
+  uint32_t sp = USER_STACK_TOP;
+  const char *arg0 = "init";
+  sp -= 5;
+  kmemcpy((void *)(uintptr_t)sp, arg0, 5); // "init\0"
+  uint32_t arg0p = sp;
+  sp &= ~15u; // 16-byte align, as the SysV i386 ABI expects at entry
+  sp -= 8;    // padding
+  *(uint32_t *)(uintptr_t)sp = 0;
+  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
+  sp -= 8; // auxv: AT_NULL (0)
+  *(uint32_t *)(uintptr_t)sp = 0;
+  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
+  sp -= 4; // envp terminator
+  *(uint32_t *)(uintptr_t)sp = 0;
+  sp -= 4; // argv terminator
+  *(uint32_t *)(uintptr_t)sp = 0;
+  sp -= 4; // argv[0]
+  *(uint32_t *)(uintptr_t)sp = arg0p;
+  sp -= 4; // argc
+  *(uint32_t *)(uintptr_t)sp = 1;
+  uint32_t user_stack = sp;
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
   uint32_t kernel_stack = pmm_alloc();
