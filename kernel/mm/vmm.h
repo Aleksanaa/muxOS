@@ -6,3 +6,4 @@ void vmm_init();
 uint32_t vmm_alloc();
 uint32_t vmm_alloc_at(uint32_t virt);
 void vmm_free(uint32_t virt);
+int vmm_page_present(uint32_t virt);

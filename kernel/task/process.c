@@ -1,5 +1,6 @@
 #include "process.h"
 #include "../lib/string.h"
+#include "elf.h"
 #include "fs.h"
 #include "pmm.h"
 #include "tss.h"
@@ -11,22 +12,13 @@ int current = 0;
 int process_count = 0;
 
 extern void enter_usermode(uint32_t entry, uint32_t stack);
-extern char _user_load_start;
-extern char _user_load_end;
-extern char _user_start;
-extern char _user_end;
-extern char _user_text_load_start;
-extern char _user_text_load_end;
-extern char _user_rodata;
-extern char _user_rodata_load_start;
-extern char _user_rodata_load_end;
 
-#define USER_BASE 0x20000000u
+/* The userland ELF is embedded in the kernel image by objcopy. */
+extern const uint8_t _binary_build_user_elf_start[];
+extern const uint8_t _binary_build_user_elf_end[];
 
-static uint32_t user_image_pages() {
-  uint32_t image_size = (uint32_t)&_user_end - (uint32_t)&_user_start;
-  return (image_size + 4095) / 4096;
-}
+#define USER_STACK_TOP 0x28000000u
+#define USER_STACK_PAGES 16u
 
 void context_switch(context_t *old, context_t *new);
 void process_enter(context_t *old, context_t *new);
@@ -114,64 +106,40 @@ void process_create_kernel(void (*entry)()) {
   process_count++;
 }
 
-void process_create_user(void (*entry)()) {
+void process_create_user(void) {
   extern void print(const char *, unsigned char);
-  uint32_t image_pages = user_image_pages();
-  uint32_t code_page = USER_BASE;
-  for (uint32_t i = 0; i < image_pages; i++) {
-    if (!vmm_alloc_at(USER_BASE + i * 4096)) {
-      for (uint32_t j = 0; j < i; j++)
-        vmm_free(USER_BASE + j * 4096);
+  uint32_t entry = 0;
+  uint32_t elf_size = (uint32_t)(_binary_build_user_elf_end -
+                                 _binary_build_user_elf_start);
+  if (elf_load(_binary_build_user_elf_start, elf_size, &entry) < 0) {
+    print("elf load failed\n", 0x0C);
+    return;
+  }
+
+  uint32_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096u;
+  for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
+    if (!vmm_alloc_at(stack_base + i * 4096)) {
+      print("user stack map failed\n", 0x0C);
       return;
     }
   }
-
-  uint8_t *text_src = (uint8_t *)&_user_text_load_start;
-  uint8_t *text_dst = (uint8_t *)USER_BASE;
-  for (uint32_t i = 0;
-       i < (uint32_t)&_user_text_load_end - (uint32_t)&_user_text_load_start;
-       i++)
-    text_dst[i] = text_src[i];
-
-  uint8_t *rodata_src = (uint8_t *)&_user_rodata_load_start;
-  uint8_t *rodata_dst = (uint8_t *)&_user_rodata;
-  for (uint32_t i = 0; i < (uint32_t)&_user_rodata_load_end -
-                               (uint32_t)&_user_rodata_load_start;
-       i++)
-    rodata_dst[i] = rodata_src[i];
-
-  // 固定布局：代码段位于 USER_BASE，用户栈位于 USER_BASE + 64KiB 之后，
-  // 避免 vmm_alloc() 在用户地址空间中分配到错误的低地址页，并造成
-  // 代码页/栈页发生重叠或错位。
-  uint32_t user_stack_base = USER_BASE + 0x10000u;
-  for (uint32_t i = 0; i < 4; i++) {
-    if (!vmm_alloc_at(user_stack_base + i * 4096)) {
-      for (uint32_t j = 0; j < image_pages; j++)
-        vmm_free(USER_BASE + j * 4096);
-      for (uint32_t j = 0; j < i; j++)
-        vmm_free(user_stack_base + j * 4096);
-      return;
-    }
-  }
-  /* 栈向低地址增长，栈顶应位于四个已映射页之后。 */
-  uint32_t user_stack = user_stack_base + 4 * 4096;
+  uint32_t user_stack = USER_STACK_TOP;
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
   uint32_t kernel_stack = pmm_alloc();
-  if (!kernel_stack) {
+  if (!kernel_stack)
     return;
-  }
   kernel_stack += 4096;
 
   processes[process_count].pid = process_count;
-  processes[process_count].ctx.esp = code_page;
+  processes[process_count].ctx.esp = entry;
   processes[process_count].ctx.ebp = user_stack;
   processes[process_count].ctx.ebx = 0;
   processes[process_count].ctx.esi = 0;
   processes[process_count].ctx.edi = 0;
   processes[process_count].started = 0;
   processes[process_count].kernel_stack = kernel_stack;
-  processes[process_count].user_code = code_page;
+  processes[process_count].user_code = entry;
   processes[process_count].user_stack = user_stack;
   processes[process_count].state = PROC_RUNNING;
   processes[process_count].parent_pid = 0;
@@ -235,14 +203,11 @@ void process_exit() {
     return;
   }
 
-  /* 无父进程：直接释放内存并删除 */
+  /* 无父进程：直接释放内存并删除。
+   * 注意：ELF 映射的代码/数据页未跟踪，此处不释放（toy 阶段接受泄漏）。 */
   if (p->kernel_stack != 0) {
-    if (p->user_code) {
-      for (uint32_t i = 0; i < user_image_pages(); i++)
-        vmm_free(p->user_code + i * 4096);
-    }
     if (p->user_stack) {
-      for (int i = 0; i < 4; i++)
+      for (uint32_t i = 0; i < USER_STACK_PAGES; i++)
         vmm_free(p->user_stack - 4096 * (i + 1));
     }
     pmm_free(p->kernel_stack - 4096);
@@ -338,101 +303,13 @@ int process_wait() {
 uint32_t syscall_kernel_esp = 0;
 
 int process_fork(uint32_t child_eax_ret) {
-  extern void print(const char *, unsigned char);
-  print("fork start\n", 0x0E);
-  process_t *p = &processes[current];
-  uint32_t parent_pid = p->pid;
-  if (process_count >= MAX_PROCESSES)
-    return -1;
-
-  // allocate new code page and copy user code
-  extern void user_c_start();
-  extern void user_c_end();
-  uint32_t start = (uint32_t)&user_c_start;
-  uint32_t end = (uint32_t)&user_c_end;
-  uint32_t code_size = end - start;
-  if (code_size > 4096)
-    code_size = 4096;
-
-  uint32_t code_page = vmm_alloc();
-  if (!code_page)
-    return -1;
-  uint8_t *src = (uint8_t *)start;
-  uint8_t *dst = (uint8_t *)code_page;
-  for (uint32_t i = 0; i < code_size; i++)
-    dst[i] = src[i];
-
-  // allocate new user stack (1 page) and copy parent's top stack page
-  uint32_t child_user_stack_base = vmm_alloc();
-  if (!child_user_stack_base)
-    return -1;
-  uint32_t child_user_stack_top = child_user_stack_base + 4096;
-
-  // copy parent's top stack page (where the active stack frame lives)
-  uint32_t parent_top_page = p->user_stack - 4096;
-  uint8_t *usrc = (uint8_t *)(uintptr_t)parent_top_page;
-  uint8_t *udst = (uint8_t *)(uintptr_t)child_user_stack_base;
-  for (int i = 0; i < 4096; i++)
-    udst[i] = usrc[i];
-
-  // allocate new kernel stack and copy parent's kernel stack
-  uint32_t parent_kstack_base = processes[current].kernel_stack - 4096;
-  uint32_t child_kstack = pmm_alloc();
-  if (!child_kstack)
-    return -1;
-  uint8_t *ksrc = (uint8_t *)(uintptr_t)parent_kstack_base;
-  uint8_t *kdst = (uint8_t *)(uintptr_t)child_kstack;
-  for (int i = 0; i < 4096; i++)
-    kdst[i] = ksrc[i];
-  uint32_t child_kstack_top = child_kstack + 4096;
-
-  // compute child's kernel esp: same offset from stack base as parent
-  uint32_t esp_offset = processes[current].kernel_stack - syscall_kernel_esp;
-  uint32_t child_iret_esp = child_kstack_top - esp_offset;
-
-  // syscall_stub now does pusha before saving syscall_kernel_esp? No:
-  // syscall_kernel_esp is saved BEFORE pusha, so:
-  //   child_iret_esp = child_kstack_top - (kernel_stack - syscall_kernel_esp)
-  //   parent pusha frame is at syscall_kernel_esp - 32
-  //   child pusha frame is at child_iret_esp - 32
-  uint32_t child_pusha_esp = child_iret_esp - 32;
-
-  // copy parent's pusha frame (contains real user registers including ebp)
-  uint32_t parent_pusha_esp = syscall_kernel_esp - 32;
-  uint32_t *src_pusha = (uint32_t *)(uintptr_t)parent_pusha_esp;
-  uint32_t *dst_pusha = (uint32_t *)(uintptr_t)child_pusha_esp;
-  for (int i = 0; i < 8; i++)
-    dst_pusha[i] = src_pusha[i];
-  // patch eax = child return value (0)
-  dst_pusha[7] = child_eax_ret;
-
-  uint32_t child_esp = child_pusha_esp;
-
-  // patch iret frame: update ESP_user to child's stack
-  uint32_t *child_iret = (uint32_t *)(uintptr_t)child_iret_esp;
-  uint32_t parent_user_esp = child_iret[3];
-  uint32_t offset_from_top = p->user_stack - parent_user_esp;
-  child_iret[3] = child_user_stack_top - offset_from_top;
-
-  int child_idx = process_count;
-  processes[child_idx].pid = process_count + 1;
-  processes[child_idx].ctx.esp = child_esp;
-  processes[child_idx].ctx.ebp = 0;
-  processes[child_idx].ctx.ebx = 0;
-  processes[child_idx].ctx.esi = 0;
-  processes[child_idx].ctx.edi = 0;
-  processes[child_idx].state = 1;
-  processes[child_idx].started = 1;
-  processes[child_idx].kernel_stack = child_kstack_top;
-  processes[child_idx].sleep_ticks = 0;
-  processes[child_idx].user_code = code_page;
-  processes[child_idx].user_stack = child_user_stack_top;
-  processes[current].state = PROC_RUNNING;
-  processes[child_idx].parent_pid = parent_pid;
-  fd_fork(processes[current].fds, processes[child_idx].fds);
-  process_count++;
-
-  return processes[child_idx].pid;
+  (void)child_eax_ret;
+  /*
+   * TODO: copy the process address space (ELF segments + stack).  The kernel
+   * still runs everything on one shared page directory, so a correct fork is
+   * not possible yet; this becomes necessary alongside mlibc's fork/exec.
+   */
+  return -1;
 }
 
 int process_current_pid() { return current; }

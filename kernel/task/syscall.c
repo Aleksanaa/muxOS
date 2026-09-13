@@ -11,7 +11,11 @@
 
 static struct file **cur_fds(void) { return processes[current].fds; }
 
-int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
+int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
+                    uint32_t esi, uint32_t edi, uint32_t ebp) {
+  (void)esi;
+  (void)edi;
+  (void)ebp;
   switch (eax) {
   case SYS_READ: {
     struct file *f = fdget(cur_fds(), (int)ebx);

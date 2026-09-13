@@ -184,12 +184,19 @@ syscall_stub:
     ; 保存所有用户态寄存器（供 fork 复制完整现场）
     pusha
 
-    ; 按 C 调用约定从右到左压参数，调用 syscall_handler(eax,ebx,ecx,edx)
-    ; 从 pusha 帧里取出原始参数
+    ; 按 C 调用约定从右到左压参数
+    ; syscall_handler(eax, ebx, ecx, edx, esi, edi, ebp)
+    ; 从 pusha 帧里取出原始参数（pusha 布局见 irq0_stub 注释）
     mov eax, [esp + 28]   ; eax (syscall number)
     mov ebx, [esp + 16]   ; ebx (arg1)
     mov ecx, [esp + 24]   ; ecx (arg2)
     mov edx, [esp + 20]   ; edx (arg3)
+    mov esi, [esp + 4]    ; esi (arg4)
+    mov edi, [esp + 0]    ; edi (arg5)
+    mov ebp, [esp + 8]    ; ebp (arg6)
+    push ebp
+    push edi
+    push esi
     push edx
     push ecx
     push ebx
@@ -197,9 +204,9 @@ syscall_stub:
     call syscall_handler
     ; Blocking handlers can enable IRQs; keep return and scheduling atomic.
     cli
-    ; patch eax return value back into pusha frame
-    mov [esp + 44], eax         ; 清理 4 个参数后，pusha.eax 位于 esp+44
-    add esp, 16         ; 清除压入的 4 个参数
+    ; patch eax return value back into pusha frame (7 args = 28 bytes above)
+    mov [esp + 56], eax
+    add esp, 28           ; 清除压入的 7 个参数
 
     ; 检查当前进程是否是 ZOMBIE（SYS_EXIT 设置）或 sleep_ticks > 0
     mov ecx, [current]

@@ -115,6 +115,14 @@ uint32_t vmm_alloc_at(uint32_t virt) {
   return virt;
 }
 
+int vmm_page_present(uint32_t virt) {
+  uint32_t pd_idx = virt >> 22;
+  if (!(page_directory[pd_idx] & PAGE_PRESENT))
+    return 0;
+  uint32_t *pt = (uint32_t *)(uintptr_t)(page_directory[pd_idx] & ~0xFFF);
+  return (pt[(virt >> 12) & 0x3FF] & PAGE_PRESENT) ? 1 : 0;
+}
+
 void vmm_free(uint32_t virt) {
   uint32_t pd_idx = virt >> 22;
   uint32_t pt_idx = (virt >> 12) & 0x3FF;

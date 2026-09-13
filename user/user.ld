@@ -1,10 +1,11 @@
-ENTRY(_start)
+/* Linker script for muxOS user programs.  Linked at a fixed high virtual
+ * address so the kernel can map segments directly. */
+ENTRY(user_c_start)
 
 SECTIONS {
-    . = 1M;
+    . = 0x20000000;
 
     .text ALIGN(4K) : {
-        *(.multiboot)
         *(.text*)
     }
 
@@ -20,6 +21,4 @@ SECTIONS {
         *(COMMON)
         *(.bss*)
     }
-
-    _kernel_end = .;
 }

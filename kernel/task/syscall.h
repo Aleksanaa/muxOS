@@ -38,6 +38,7 @@
 #define SYS_GETDENTS 28
 #define SYS_DUP 29
 void syscall_init();
-int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
+int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
+                    uint32_t esi, uint32_t edi, uint32_t ebp);
 
 #endif

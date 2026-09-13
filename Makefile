@@ -1,5 +1,6 @@
 # Toolchain -------------------------------------------------------------------
 CC            := $(shell command -v i686-elf-gcc 2>/dev/null || echo i686-elf-gcc)
+OBJCOPY       := $(shell command -v i686-elf-objcopy 2>/dev/null || echo i686-elf-objcopy)
 NASM          := $(shell command -v nasm 2>/dev/null || echo nasm)
 GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo grub-mkrescue)
 QEMU          := $(shell command -v qemu-system-i386 2>/dev/null || echo qemu-system-i386)
@@ -16,20 +17,27 @@ CPPFLAGS := -I. -Iarch/x86 -Iarch/x86/include \
 CFLAGS   := -m32 -ffreestanding -fno-builtin -fno-pic -O0 -g \
             -Wall -Wextra -MMD -MP
 LDFLAGS  := -m32 -T linker.ld -ffreestanding -nostdlib
+LDFLAGS_USER := -m32 -T user/user.ld -ffreestanding -nostdlib
 QEMUFLAGS ?= -display cocoa,zoom-to-fit=on
 
-# userlib.c currently includes user/bin/shell.c directly, so shell.c must not
-# be compiled separately. minishell is not linked into the kernel image yet.
+# userlib.c includes user/bin/shell.c directly, so shell.c must not be
+# compiled separately.  The userland is linked into its own ELF, then embedded
+# in the kernel image as a binary blob and loaded at boot by kernel/elf.c.
 KERNEL_C_SRCS   := $(shell find arch kernel drivers -type f -name '*.c' | sort)
 KERNEL_ASM_SRCS := $(shell find arch -type f -name '*.s' | sort)
 USER_C_SRCS     := user/lib/userlib.c
 USER_ASM_SRCS   := user/crt/user_crt.s
 
-C_SRCS   := $(KERNEL_C_SRCS) $(USER_C_SRCS)
-ASM_SRCS := $(KERNEL_ASM_SRCS) $(USER_ASM_SRCS)
-OBJS     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS)) \
-            $(patsubst %.s,$(BUILD)/%.o,$(ASM_SRCS))
-DEPS     := $(OBJS:.o=.d)
+KERNEL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_C_SRCS)) \
+               $(patsubst %.s,$(BUILD)/%.o,$(KERNEL_ASM_SRCS))
+USER_OBJS   := $(patsubst %.c,$(BUILD)/%.o,$(USER_C_SRCS)) \
+               $(patsubst %.s,$(BUILD)/%.o,$(USER_ASM_SRCS))
+
+USER_ELF  := $(BUILD)/user.elf
+USER_BLOB := $(BUILD)/user_elf.o
+KERNEL_OBJS += $(USER_BLOB)
+
+DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 .PHONY: all run clean print-sources
@@ -47,9 +55,21 @@ $(BUILD)/%.o: %.s
 # Interrupt code cannot rely on SSE register state.
 $(BUILD)/drivers/input/keyboard.o: CFLAGS += -mgeneral-regs-only
 
-$(KERNEL): $(OBJS) linker.ld
+$(USER_ELF): $(USER_OBJS) user/user.ld
 	@mkdir -p $(@D)
-	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
+	$(CC) $(LDFLAGS_USER) -o $@ $(USER_OBJS) -lgcc
+
+# Embed the userland ELF into the kernel image; symbols become
+# _binary_build_user_elf_start/_end and are identity-mapped with the kernel.
+$(USER_BLOB): $(USER_ELF)
+	@mkdir -p $(@D)
+	$(OBJCOPY) -I binary -O elf32-i386 -B i386 \
+	  --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	  $< $@
+
+$(KERNEL): $(KERNEL_OBJS) linker.ld
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(KERNEL_OBJS) -lgcc
 
 $(ISO): $(KERNEL)
 	@mkdir -p $(ISO_DIR)/boot/grub
@@ -70,6 +90,6 @@ clean:
 	rm -rf $(BUILD)
 
 print-sources:
-	@printf '%s\n' $(C_SRCS) $(ASM_SRCS)
+	@printf '%s\n' $(KERNEL_C_SRCS) $(KERNEL_ASM_SRCS) $(USER_C_SRCS) $(USER_ASM_SRCS)
 
 -include $(DEPS)

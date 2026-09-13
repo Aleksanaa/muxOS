@@ -46,7 +46,7 @@ typedef struct {
 void process_schedule();
 int process_tick();
 void process_create_kernel(void (*entry)());
-void process_create_user(void (*entry)());
+void process_create_user(void);
 void process_register_current();
 void start_user_process(int pid, char *process_name);
 void process_sleep(uint32_t ticks);

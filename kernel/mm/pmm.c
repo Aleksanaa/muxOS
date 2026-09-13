@@ -17,8 +17,6 @@ void pmm_mark_free(uint32_t start, uint32_t length);
 void pmm_mark_used(uint32_t start, uint32_t length);
 
 extern uint32_t _kernel_end;
-/* 用户镜像的 LMA 位于内核镜像之后，也必须在首次复制前保留。 */
-extern uint32_t _user_load_end;
 
 /*
  * pmm_init - Initialize physical memory manager
@@ -49,13 +47,8 @@ void pmm_init(multiboot_info_t *mbi) {
     }
   }
 
-  /*
-   * 保留内核及其紧随其后的用户镜像加载区。_kernel_end 只指向用户
-   * 镜像 LMA 的起点；若只保留到那里，后续 pmm_alloc 会覆写用户代码尾部。
-   */
-  uint32_t reserved_end = (uint32_t)(uintptr_t)&_user_load_end;
-  if (reserved_end < (uint32_t)(uintptr_t)&_kernel_end)
-    reserved_end = (uint32_t)(uintptr_t)&_kernel_end;
+  /* 保留内核镜像自身（含内嵌的用户 ELF blob）。 */
+  uint32_t reserved_end = (uint32_t)(uintptr_t)&_kernel_end;
   pmm_mark_used(0x100000, reserved_end - 0x100000);
   print("[OK] PMM init\n", 0);
 }
