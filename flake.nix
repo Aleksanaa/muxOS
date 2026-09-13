@@ -33,8 +33,18 @@
         helloLd = ./ports/mlibc/hello.ld;
       };
 
+      toybox = pkgs.callPackage ./nix/pkgs/toybox {
+        cross = linuxCross;
+        inherit mlibc;
+        helloLd = ./ports/mlibc/hello.ld;
+      };
+
       muxos-mlibc = pkgs.callPackage ./nix/pkgs/muxos-mlibc {
         inherit muxos hello;
+      };
+
+      muxos-toybox = pkgs.callPackage ./nix/pkgs/muxos-toybox {
+        inherit muxos toybox;
       };
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''
@@ -55,8 +65,10 @@
       packages.${system} = {
         default = muxos;
         muxos-mlibc = muxos-mlibc;
+        muxos-toybox = muxos-toybox;
         mlibc = mlibc;
         hello = hello;
+        toybox = toybox;
       };
 
       apps.${system} = {

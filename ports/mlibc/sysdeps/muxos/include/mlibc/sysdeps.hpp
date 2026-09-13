@@ -21,7 +21,17 @@ struct MuxosSysdepTags :
 	Open,
 	VmMap,
 	VmUnmap,
-	ClockGet
+	ClockGet,
+	GetPid,
+	GetPpid,
+	Umask,
+	Sigaction,
+	Sigprocmask,
+	Ioctl,
+	GetCwd,
+	Chdir,
+	Readlink,
+	Access
 {};
 
 template<typename Tag>

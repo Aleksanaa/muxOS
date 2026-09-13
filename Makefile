@@ -41,6 +41,11 @@ USER_EMBED := $(BUILD)/user_embedded.elf
 USER_BLOB  := $(BUILD)/user_elf.o
 KERNEL_OBJS += $(USER_BLOB)
 
+# Initial argv for the user process, space separated.
+USER_ARGV  ?= init
+GEN_ARGV   := $(BUILD)/user_argv.c
+KERNEL_OBJS += $(BUILD)/user_argv.o
+
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
@@ -58,6 +63,16 @@ $(BUILD)/%.o: %.s
 
 # Interrupt code cannot rely on SSE register state.
 $(BUILD)/drivers/input/keyboard.o: CFLAGS += -mgeneral-regs-only
+
+$(GEN_ARGV):
+	@mkdir -p $(@D)
+	@{ printf 'const char *user_init_argv[] = { '; \
+	   for a in $(USER_ARGV); do printf '"%s", ' "$$a"; done; \
+	   printf '0 };\n'; } > $@
+
+$(BUILD)/user_argv.o: $(GEN_ARGV)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 ifeq ($(USER_ELF),$(BUILD)/user.elf)
 $(BUILD)/user.elf: $(USER_OBJS) user/user.ld

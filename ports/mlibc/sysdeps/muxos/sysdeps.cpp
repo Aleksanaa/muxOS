@@ -15,6 +15,7 @@
 #define KSYS_OPEN 8
 #define KSYS_CLOSE 9
 #define KSYS_LSEEK 24
+#define KSYS_GETPID 21
 #define KSYS_MMAP 30
 #define KSYS_MUNMAP 31
 #define KSYS_SET_TLS 32
@@ -34,7 +35,75 @@ void Sysdeps<LibcLog>::operator()(const char *message) {
 
 int Sysdeps<Isatty>::operator()(int fd) {
 	(void)fd;
-	/* Report a tty so stdio behaves; we do not model ttys yet. */
+	/* The console is not a real tty; tell toybox so it skips termios ioctls. */
+	return ENOTTY;
+}
+
+pid_t Sysdeps<GetPid>::operator()() {
+	long r = syscall(KSYS_GETPID);
+	return (pid_t)(r < 0 ? 0 : r);
+}
+
+pid_t Sysdeps<GetPpid>::operator()() { return 0; }
+
+int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
+	(void)mode;
+	*old = 0;
+	return 0;
+}
+
+int Sysdeps<Sigaction>::operator()(int sig, const struct sigaction *act,
+		struct sigaction *old) {
+	(void)sig;
+	(void)act;
+	if (old)
+		memset(old, 0, sizeof(*old));
+	return 0;
+}
+
+int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *set,
+		sigset_t *old) {
+	(void)how;
+	(void)set;
+	if (old)
+		memset(old, 0, sizeof(*old));
+	return 0;
+}
+
+int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg,
+		int *result) {
+	(void)fd;
+	(void)request;
+	(void)arg;
+	(void)result;
+	return ENOTTY;
+}
+
+int Sysdeps<GetCwd>::operator()(char *buffer, size_t size) {
+	if (size < 2)
+		return ERANGE;
+	buffer[0] = '/';
+	buffer[1] = 0;
+	return 0;
+}
+
+int Sysdeps<Chdir>::operator()(const char *path) {
+	(void)path;
+	return 0;
+}
+
+int Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_size,
+		ssize_t *length) {
+	(void)path;
+	(void)buffer;
+	(void)max_size;
+	(void)length;
+	return ENOENT;
+}
+
+int Sysdeps<Access>::operator()(const char *path, int mode) {
+	(void)path;
+	(void)mode;
 	return 0;
 }
 

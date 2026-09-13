@@ -123,14 +123,22 @@ void process_create_user(void) {
       return;
     }
   }
-  /* Build the initial process stack: argc/argv/envp + a minimal auxv.
-   * mlibc's startup walks the auxv, so AT_NULL must be present or it reads
-   * off the top of the stack. */
+  /* Build the initial process stack from user_init_argv (a NULL-terminated
+   * string array generated from the Makefile's USER_ARGV): argc/argv/envp
+   * plus a minimal auxv, which mlibc's startup walks. */
+  extern const char *user_init_argv[];
   uint32_t sp = USER_STACK_TOP;
-  const char *arg0 = "init";
-  sp -= 5;
-  kmemcpy((void *)(uintptr_t)sp, arg0, 5); // "init\0"
-  uint32_t arg0p = sp;
+  uint32_t argp[32];
+  int argc = 0;
+  while (user_init_argv[argc] && argc < 32) {
+    const char *s = user_init_argv[argc];
+    uint32_t len = kstrlen(s) + 1;
+    sp -= len;
+    kmemcpy((void *)(uintptr_t)sp, s, len);
+    argp[argc] = sp;
+    sp &= ~3u;
+    argc++;
+  }
   sp &= ~15u; // 16-byte align, as the SysV i386 ABI expects at entry
   sp -= 8;    // padding
   *(uint32_t *)(uintptr_t)sp = 0;
@@ -142,10 +150,12 @@ void process_create_user(void) {
   *(uint32_t *)(uintptr_t)sp = 0;
   sp -= 4; // argv terminator
   *(uint32_t *)(uintptr_t)sp = 0;
-  sp -= 4; // argv[0]
-  *(uint32_t *)(uintptr_t)sp = arg0p;
+  for (int i = argc - 1; i >= 0; i--) {
+    sp -= 4;
+    *(uint32_t *)(uintptr_t)sp = argp[i];
+  }
   sp -= 4; // argc
-  *(uint32_t *)(uintptr_t)sp = 1;
+  *(uint32_t *)(uintptr_t)sp = (uint32_t)argc;
   uint32_t user_stack = sp;
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
