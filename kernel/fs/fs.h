@@ -17,7 +17,8 @@
  */
 
 #define BSIZE      4096u
-#define NDIRECT    128u
+/* 512 direct blocks = 2 MiB: big enough for a static toybox applet. */
+#define NDIRECT    512u
 #define MAXFILE    (NDIRECT * BSIZE)
 #define MAX_INODES 128u
 
@@ -94,13 +95,27 @@ int filestat(struct file *f, struct stat *st);
 int filetruncate(struct file *f, uint32_t size);
 struct inode *namei(const char *path);
 struct inode *nameiparent(const char *path, char *name);
+struct inode *nameiat(struct inode *base, const char *path);
+struct inode *nameiparentat(struct inode *base, const char *path, char *name);
 struct file *vfs_open(const char *path, int flags);
+struct file *vfs_open_at(struct inode *base, const char *path, int flags);
 int vfs_mkdir(const char *path);
+int vfs_mkdir_at(struct inode *base, const char *path);
 int vfs_unlink(const char *path);
+int vfs_unlink_at(struct inode *base, const char *path);
 int vfs_rmdir(const char *path);
+int vfs_rmdir_at(struct inode *base, const char *path);
 int vfs_rename(const char *oldpath, const char *newpath);
+int vfs_rename_at(struct inode *obase, const char *oldpath,
+                  struct inode *nbase, const char *newpath);
 int vfs_link(const char *oldpath, const char *newpath);
+int vfs_link_at(struct inode *obase, const char *oldpath,
+                struct inode *nbase, const char *newpath);
 int vfs_chmod(const char *path, uint16_t mode);
+int vfs_chmod_at(struct inode *base, const char *path, uint16_t mode);
+int vfs_stat_at(struct inode *base, const char *path, struct stat *st);
+int vfs_chdir(const char *path);
+int vfs_getcwd(char *buf, uint32_t size);
 int fdalloc(struct file **fds, struct file *f);
 struct file *fdget(struct file **fds, int fd);
 void fdclose(struct file **fds, int fd);

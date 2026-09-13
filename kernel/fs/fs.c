@@ -125,12 +125,115 @@ static const char *skipelem(const char *path, char *name) {
   return path;
 }
 
-static struct inode *namex(const char *path, int parent, char *name) {
+/*
+ * Current working directory, shared by all processes.  There is exactly one
+ * user process (the shell) at a time and exec preserves it, so a global is
+ * sufficient until per-process isolation lands.
+ */
+static char fs_cwd[256] = "/";
+
+/* Lexically normalize an absolute path ("//", ".", ".."). */
+static int path_normalize(const char *in, char *out, uint32_t outsz) {
+  uint32_t n = 1;
+  const char *p = in;
+
+  if (outsz < 2)
+    return -1;
+  out[0] = '/';
+
+  while (*p) {
+    while (*p == '/')
+      p++;
+    if (!*p)
+      break;
+    const char *s = p;
+    while (*p && *p != '/')
+      p++;
+    uint32_t len = (uint32_t)(p - s);
+
+    if (len == 1 && s[0] == '.')
+      continue;
+    if (len == 2 && s[0] == '.' && s[1] == '.') {
+      if (n > 1) {
+        n--;
+        while (n > 0 && out[n - 1] != '/')
+          n--;
+        if (n == 0)
+          n = 1;
+      }
+      continue;
+    }
+
+    if (n + len + 1 >= outsz)
+      return -1;
+    kmemcpy(out + n, s, len);
+    n += len;
+    out[n++] = '/';
+  }
+
+  if (n > 1 && out[n - 1] == '/')
+    n--;
+  out[n] = 0;
+  return 0;
+}
+
+/* Make a possibly-relative path absolute (joined with fs_cwd) and normalized. */
+static int path_absolute(const char *path, char *out, uint32_t outsz) {
+  char tmp[256];
+
+  if (path[0] == '/') {
+    if (kstrlen(path) >= sizeof(tmp))
+      return -1;
+    kstrcpy(tmp, path);
+  } else {
+    uint32_t cl = kstrlen(fs_cwd);
+    uint32_t pl = kstrlen(path);
+    if (cl + 1 + pl >= sizeof(tmp))
+      return -1;
+    kmemcpy(tmp, fs_cwd, cl);
+    tmp[cl] = '/';
+    kmemcpy(tmp + cl + 1, path, pl + 1);
+  }
+  return path_normalize(tmp, out, outsz);
+}
+
+/* Inode of the current working directory. */
+static struct inode *iget_cwd(void) {
   struct inode *ip = iget(ROOTINO);
+  char name[DIRSIZ];
+  const char *p;
+
+  if (!ip)
+    return 0;
+  p = skipelem(fs_cwd, name);
+  while (p) {
+    if (ip->type != T_DIR)
+      return 0;
+    uint32_t inum = (uint32_t)dirlookup(ip, name, 0);
+    if (inum == 0)
+      return 0;
+    ip = iget(inum);
+    if (!ip)
+      return 0;
+    p = skipelem(p, name);
+  }
+  return ip;
+}
+
+/*
+ * Resolve `path`.  A relative path starts at `base` (NULL means the process
+ * cwd); absolute paths always start at the root.  With `parent` set, walking
+ * stops at the final component and returns its directory.
+ */
+static struct inode *namexat(struct inode *base, const char *path, int parent,
+                             char *name) {
+  struct inode *ip = (path[0] == '/') ? iget(ROOTINO)
+                                      : (base ? base : iget_cwd());
   if (!ip) {
     fs_errno = ENOENT;
     return 0;
   }
+
   const char *p = skipelem(path, name);
   while (p) {
     if (ip->type != T_DIR) {
@@ -158,23 +261,29 @@ static struct inode *namex(const char *path, int parent, char *name) {
   return ip;
 }
 
-struct inode *namei(const char *path) {
+struct inode *nameiat(struct inode *base, const char *path) {
   char name[DIRSIZ];
-  return namex(path, 0, name);
+  return namexat(base, path, 0, name);
 }
 
+struct inode *nameiparentat(struct inode *base, const char *path, char *name) {
+  return namexat(base, path, 1, name);
+}
+
+struct inode *namei(const char *path) { return nameiat(0, path); }
+
 struct inode *nameiparent(const char *path, char *name) {
-  return namex(path, 1, name);
+  return nameiparentat(0, path, name);
 }
 
 /* --- open -------------------------------------------------------------- */
 
-struct file *vfs_open(const char *path, int flags) {
+struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
   struct inode *ip;
 
   if (flags & O_CREAT) {
     char name[DIRSIZ];
-    struct inode *dp = nameiparent(path, name);
+    struct inode *dp = nameiparentat(base, path, name);
     if (!dp)
       return 0;
     uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
@@ -197,7 +306,7 @@ struct file *vfs_open(const char *path, int flags) {
       }
     }
   } else {
-    ip = namei(path);
+    ip = nameiat(base, path);
     if (!ip)
       return 0;
   }
@@ -222,9 +331,13 @@ struct file *vfs_open(const char *path, int flags) {
   return f;
 }
 
-int vfs_mkdir(const char *path) {
+struct file *vfs_open(const char *path, int flags) {
+  return vfs_open_at(0, path, flags);
+}
+
+int vfs_mkdir_at(struct inode *base, const char *path) {
   char name[DIRSIZ];
-  struct inode *dp = nameiparent(path, name);
+  struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
   if (dirlookup(dp, name, 0)) {
@@ -248,9 +361,11 @@ int vfs_mkdir(const char *path) {
   return 0;
 }
 
-int vfs_unlink(const char *path) {
+int vfs_mkdir(const char *path) { return vfs_mkdir_at(0, path); }
+
+int vfs_unlink_at(struct inode *base, const char *path) {
   char name[DIRSIZ];
-  struct inode *dp = nameiparent(path, name);
+  struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
@@ -269,9 +384,11 @@ int vfs_unlink(const char *path) {
   return 0;
 }
 
-int vfs_rmdir(const char *path) {
+int vfs_unlink(const char *path) { return vfs_unlink_at(0, path); }
+
+int vfs_rmdir_at(struct inode *base, const char *path) {
   char name[DIRSIZ];
-  struct inode *dp = nameiparent(path, name);
+  struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
@@ -296,9 +413,12 @@ int vfs_rmdir(const char *path) {
   return 0;
 }
 
-int vfs_rename(const char *oldpath, const char *newpath) {
+int vfs_rmdir(const char *path) { return vfs_rmdir_at(0, path); }
+
+int vfs_rename_at(struct inode *obase, const char *oldpath,
+                  struct inode *nbase, const char *newpath) {
   char oname[DIRSIZ], nname[DIRSIZ];
-  struct inode *odp = nameiparent(oldpath, oname);
+  struct inode *odp = nameiparentat(obase, oldpath, oname);
   if (!odp)
     return -1;
   uint32_t inum = (uint32_t)dirlookup(odp, oname, 0);
@@ -306,7 +426,7 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     fs_errno = ENOENT;
     return -1;
   }
-  struct inode *ndp = nameiparent(newpath, nname);
+  struct inode *ndp = nameiparentat(nbase, newpath, nname);
   if (!ndp)
     return -1;
 
@@ -340,8 +460,13 @@ int vfs_rename(const char *oldpath, const char *newpath) {
   return 0;
 }
 
-int vfs_link(const char *oldpath, const char *newpath) {
-  struct inode *ip = namei(oldpath);
+int vfs_rename(const char *oldpath, const char *newpath) {
+  return vfs_rename_at(0, oldpath, 0, newpath);
+}
+
+int vfs_link_at(struct inode *obase, const char *oldpath,
+                struct inode *nbase, const char *newpath) {
+  struct inode *ip = nameiat(obase, oldpath);
   if (!ip)
     return -1;
   if (ip->type == T_DIR) {
@@ -349,7 +474,7 @@ int vfs_link(const char *oldpath, const char *newpath) {
     return -1;
   }
   char name[DIRSIZ];
-  struct inode *dp = nameiparent(newpath, name);
+  struct inode *dp = nameiparentat(nbase, newpath, name);
   if (!dp)
     return -1;
   if (dirlookup(dp, name, 0)) {
@@ -364,11 +489,54 @@ int vfs_link(const char *oldpath, const char *newpath) {
   return 0;
 }
 
-int vfs_chmod(const char *path, uint16_t mode) {
-  struct inode *ip = namei(path);
+int vfs_link(const char *oldpath, const char *newpath) {
+  return vfs_link_at(0, oldpath, 0, newpath);
+}
+
+int vfs_chmod_at(struct inode *base, const char *path, uint16_t mode) {
+  struct inode *ip = nameiat(base, path);
   if (!ip)
     return -1;
   ip->mode = mode & 07777;
+  return 0;
+}
+
+int vfs_chmod(const char *path, uint16_t mode) {
+  return vfs_chmod_at(0, path, mode);
+}
+
+int vfs_stat_at(struct inode *base, const char *path, struct stat *st) {
+  struct inode *ip = nameiat(base, path);
+  if (!ip)
+    return -1;
+  stati(ip, st);
+  return 0;
+}
+
+int vfs_chdir(const char *path) {
+  struct inode *ip = namei(path);
+  if (!ip)
+    return -1;
+  if (ip->type != T_DIR) {
+    fs_errno = ENOTDIR;
+    return -1;
+  }
+  char abs[256];
+  if (path_absolute(path, abs, sizeof(abs)) < 0) {
+    fs_errno = ENAMETOOLONG;
+    return -1;
+  }
+  kstrcpy(fs_cwd, abs);
+  return 0;
+}
+
+int vfs_getcwd(char *buf, uint32_t size) {
+  uint32_t n = kstrlen(fs_cwd) + 1;
+  if (size < n) {
+    fs_errno = ERANGE;
+    return -1;
+  }
+  kmemcpy(buf, fs_cwd, n);
   return 0;
 }
 

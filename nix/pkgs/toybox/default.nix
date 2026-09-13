@@ -96,4 +96,6 @@ stdenv.mkDerivation {
     done
     runHook postInstall
   '';
+
+  passthru = { inherit toys; };
 }

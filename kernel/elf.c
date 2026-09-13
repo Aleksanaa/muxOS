@@ -7,6 +7,7 @@
  */
 
 #include "elf.h"
+#include "fs.h"
 #include "string.h"
 #include "vmm.h"
 #include <stdint.h>
@@ -48,5 +49,45 @@ int elf_load(const void *image, uint32_t size, uint32_t *entry) {
   }
 
   *entry = eh->e_entry;
+  return 0;
+}
+
+int elf_load_inode(struct inode *ip, uint32_t *entry) {
+  elf32_ehdr_t eh;
+  if (readi(ip, &eh, 0, sizeof(eh)) != (int)sizeof(eh))
+    return -1;
+  if (eh.e_ident[0] != 0x7f || eh.e_ident[1] != 'E' || eh.e_ident[2] != 'L' ||
+      eh.e_ident[3] != 'F')
+    return -1;
+  if (eh.e_ident[4] != ELFCLASS32 || eh.e_machine != EM_386)
+    return -1;
+
+  for (uint32_t i = 0; i < eh.e_phnum; i++) {
+    elf32_phdr_t ph;
+    uint32_t phoff = eh.e_phoff + i * eh.e_phentsize;
+    if (readi(ip, &ph, phoff, sizeof(ph)) != (int)sizeof(ph))
+      return -1;
+    if (ph.p_type != PT_LOAD || ph.p_memsz == 0)
+      continue;
+
+    uint32_t vstart = ph.p_vaddr & ~0xFFFu;
+    uint32_t vend = (ph.p_vaddr + ph.p_memsz + 0xFFFu) & ~0xFFFu;
+    for (uint32_t va = vstart; va < vend; va += 0x1000) {
+      if (!vmm_page_present(va)) {
+        if (!vmm_alloc_at(va))
+          return -1;
+      }
+    }
+
+    if (ph.p_filesz &&
+        readi(ip, (void *)(uintptr_t)ph.p_vaddr, ph.p_offset, ph.p_filesz) !=
+            (int)ph.p_filesz)
+      return -1;
+    if (ph.p_memsz > ph.p_filesz)
+      kmemset((void *)(uintptr_t)(ph.p_vaddr + ph.p_filesz), 0,
+              ph.p_memsz - ph.p_filesz);
+  }
+
+  *entry = eh.e_entry;
   return 0;
 }

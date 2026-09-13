@@ -11,7 +11,7 @@
 #define SYS_EXIT 2
 #define SYS_SLEEP 3
 #define SYS_FORK 4
-#define SYS_EXEC 5
+#define SYS_EXECVE 5
 #define SYS_WAIT 6
 // TODO
 #define SYS_RESTART_SYSCALL 7
@@ -46,6 +46,14 @@
 #define SYS_DUP2 36
 #define SYS_CHMOD 37
 #define SYS_FCHMOD 38
+#define SYS_CHDIR 39
+#define SYS_GETCWD 40
+#define SYS_OPENAT 41
+#define SYS_STATAT 42
+#define SYS_UNLINKAT 43
+#define SYS_MKDIRAT 44
+#define SYS_RENAMEAT 45
+#define SYS_LINKAT 46
 void syscall_init();
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp);

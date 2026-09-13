@@ -313,9 +313,9 @@ int sys_fork() {
   asm volatile("int $0x80" : "=a"(ret) : "a"(4));
   return ret;
 }
-int sys_exec(uint32_t start, uint32_t size) {
+int sys_execve(const char *path, char **argv) {
   int ret;
-  asm volatile("int $0x80" : "=a"(ret) : "a"(5), "b"(start), "c"(size));
+  asm volatile("int $0x80" : "=a"(ret) : "a"(5), "b"(path), "c"(argv));
   return ret;
 }
 int sys_wait() {
@@ -437,6 +437,12 @@ int sys_getdents(int fd, struct dirent *buf, int max) {
 int sys_dup(int fd) {
   int ret;
   asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_DUP), "b"(fd));
+  return ret;
+}
+
+int sys_chdir(const char *path) {
+  int ret;
+  asm volatile("int $0x80" : "=a"(ret) : "a"(SYS_CHDIR), "b"(path));
   return ret;
 }
 

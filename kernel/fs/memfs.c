@@ -10,6 +10,7 @@
 
 #include "fs.h"
 #include "pmm.h"
+#include "programs.h"
 #include "string.h"
 #include "vga.h"
 #include <stdint.h>
@@ -265,6 +266,7 @@ void fs_init(void) {
 
   struct inode *dev = create(root, "dev", T_DIR, 0);
   if (dev) {
+    dev->nlink = 2;
     dirlink(dev, ".", dev->inum);
     dirlink(dev, "..", ROOTINO);
     root->nlink++;
@@ -277,6 +279,25 @@ void fs_init(void) {
   if (hello) {
     const char *msg = "Hello from the muxOS memfs!\n";
     writei(hello, msg, 0, kstrlen(msg));
+  }
+
+  /* Copy every embedded program into /bin so the shell can exec it. */
+  struct inode *bin = create(root, "bin", T_DIR, 0);
+  if (bin) {
+    bin->nlink = 2;
+    dirlink(bin, ".", bin->inum);
+    dirlink(bin, "..", ROOTINO);
+    root->nlink++;
+    for (uint32_t i = 0; i < embedded_program_count; i++) {
+      const struct embedded_program *p = &embedded_programs[i];
+      uint32_t size = (uint32_t)(p->end - p->start);
+      struct inode *f = create(bin, p->name, T_FILE, 0);
+      if (!f || size == 0)
+        continue;
+      if (size > MAXFILE)
+        size = MAXFILE;
+      writei(f, p->start, 0, size);
+    }
   }
 
   print("[OK] FS init\n", 0);

@@ -24,6 +24,59 @@ void context_switch(context_t *old, context_t *new);
 void process_enter(context_t *old, context_t *new);
 void process_jump(context_t *new);
 
+/*
+ * Lay out argc/argv/envp and a minimal auxv at the top of the user stack,
+ * newest at the lowest address.  The stack pages must already be mapped.
+ */
+static uint32_t user_build_stack(const char *const *args, int argc) {
+  uint32_t sp = USER_STACK_TOP;
+  uint32_t argp[32];
+
+  if (argc > 32)
+    argc = 32;
+  for (int i = 0; i < argc; i++) {
+    uint32_t len = kstrlen(args[i]) + 1;
+    sp -= len;
+    kmemcpy((void *)(uintptr_t)sp, args[i], len);
+    argp[i] = sp;
+    sp &= ~3u;
+  }
+
+  sp &= ~15u; // 16-byte align, as the SysV i386 ABI expects at entry
+  sp -= 8;    // padding
+  *(uint32_t *)(uintptr_t)sp = 0;
+  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
+  sp -= 8; // auxv: AT_NULL (0)
+  *(uint32_t *)(uintptr_t)sp = 0;
+  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
+  sp -= 4; // envp terminator
+  *(uint32_t *)(uintptr_t)sp = 0;
+  sp -= 4; // argv terminator
+  *(uint32_t *)(uintptr_t)sp = 0;
+  for (int i = argc - 1; i >= 0; i--) {
+    sp -= 4;
+    *(uint32_t *)(uintptr_t)sp = argp[i];
+  }
+  sp -= 4; // argc
+  *(uint32_t *)(uintptr_t)sp = (uint32_t)argc;
+  return sp;
+}
+
+/*
+ * Point the pending syscall return at a new program.  The stub restores the
+ * pusha frame and iret's, so both the iret frame (EIP/ESP) and the saved
+ * registers live just above the kernel esp captured on syscall entry.
+ */
+static void patch_user_frame(uint32_t entry, uint32_t stack) {
+  uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+  iret[0] = entry; // EIP
+  iret[3] = stack; // ESP_user
+
+  uint32_t *regs = iret - 8; // pusha frame: edi..eax
+  for (int i = 0; i < 8; i++)
+    regs[i] = 0;
+}
+
 void process_register_current() {
   processes[0].pid = 0;
   processes[0].started = 1;
@@ -123,40 +176,8 @@ void process_create_user(void) {
       return;
     }
   }
-  /* Build the initial process stack from user_init_argv (a NULL-terminated
-   * string array generated from the Makefile's USER_ARGV): argc/argv/envp
-   * plus a minimal auxv, which mlibc's startup walks. */
-  extern const char *user_init_argv[];
-  uint32_t sp = USER_STACK_TOP;
-  uint32_t argp[32];
-  int argc = 0;
-  while (user_init_argv[argc] && argc < 32) {
-    const char *s = user_init_argv[argc];
-    uint32_t len = kstrlen(s) + 1;
-    sp -= len;
-    kmemcpy((void *)(uintptr_t)sp, s, len);
-    argp[argc] = sp;
-    sp &= ~3u;
-    argc++;
-  }
-  sp &= ~15u; // 16-byte align, as the SysV i386 ABI expects at entry
-  sp -= 8;    // padding
-  *(uint32_t *)(uintptr_t)sp = 0;
-  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
-  sp -= 8; // auxv: AT_NULL (0)
-  *(uint32_t *)(uintptr_t)sp = 0;
-  *(uint32_t *)(uintptr_t)(sp + 4) = 0;
-  sp -= 4; // envp terminator
-  *(uint32_t *)(uintptr_t)sp = 0;
-  sp -= 4; // argv terminator
-  *(uint32_t *)(uintptr_t)sp = 0;
-  for (int i = argc - 1; i >= 0; i--) {
-    sp -= 4;
-    *(uint32_t *)(uintptr_t)sp = argp[i];
-  }
-  sp -= 4; // argc
-  *(uint32_t *)(uintptr_t)sp = (uint32_t)argc;
-  uint32_t user_stack = sp;
+  static const char *init_argv[] = { "muxsh", 0 };
+  uint32_t user_stack = user_build_stack(init_argv, 1);
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
   uint32_t kernel_stack = pmm_alloc();
@@ -343,6 +364,76 @@ int process_fork(uint32_t child_eax_ret) {
    * not possible yet; this becomes necessary alongside mlibc's fork/exec.
    */
   return -1;
+}
+
+/*
+ * Replace the current process image with the ELF stored at `path`.  argv is
+ * snapshotted first because loading the new image overwrites user memory.
+ * On success the pending syscall return points at the new entry point and
+ * this returns 0; on failure it returns a negative errno.
+ */
+int process_execve(const char *path, const char *const *uargv) {
+  struct file *f = vfs_open(path, O_RDONLY);
+  if (!f)
+    return -fs_errno;
+  if (f->ip->type != T_FILE) {
+    fileclose(f);
+    return -EACCES;
+  }
+
+  char argbuf[512];
+  const char *kargv[32];
+  int argc = 0;
+  uint32_t used = 0;
+  if (uargv) {
+    while (argc < 32 && uargv[argc] && used < sizeof(argbuf) - 1) {
+      const char *s = uargv[argc];
+      uint32_t j = 0;
+      while (s[j] && used + j < sizeof(argbuf) - 1) {
+        argbuf[used + j] = s[j];
+        j++;
+      }
+      argbuf[used + j] = 0;
+      kargv[argc] = &argbuf[used];
+      used += j + 1;
+      argc++;
+    }
+  }
+  if (argc == 0) {
+    argbuf[0] = 0;
+    kargv[0] = argbuf;
+    argc = 1;
+  }
+
+  uint32_t entry;
+  if (elf_load_inode(f->ip, &entry) < 0) {
+    fileclose(f);
+    return -ENOEXEC;
+  }
+  fileclose(f);
+
+  mmap_reset();
+  uint32_t user_stack = user_build_stack(kargv, argc);
+  patch_user_frame(entry, user_stack);
+  processes[current].user_code = entry;
+  processes[current].user_stack = user_stack;
+  return 0;
+}
+
+/* Reload the embedded shell after a program it exec'd has exited. */
+int process_restore_shell(void) {
+  uint32_t entry;
+  uint32_t size = (uint32_t)(_binary_build_user_embedded_elf_end -
+                             _binary_build_user_embedded_elf_start);
+  if (elf_load(_binary_build_user_embedded_elf_start, size, &entry) < 0)
+    return -1;
+  mmap_reset();
+  static const char *argv[] = { "muxsh", 0 };
+  uint32_t user_stack = user_build_stack(argv, 1);
+  patch_user_frame(entry, user_stack);
+  processes[current].user_code = entry;
+  processes[current].user_stack = user_stack;
+  return 0;
 }
 
 int process_current_pid() { return current; }

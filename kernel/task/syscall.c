@@ -12,13 +12,50 @@
 
 static struct file **cur_fds(void) { return processes[current].fds; }
 
+#define AT_FDCWD_K (-100)
+#define AT_REMOVEDIR_K 0x200
+
+/*
+ * Inode that a relative path in an *at() syscall starts from.  AT_FDCWD means
+ * the cwd (returned as NULL, which the VFS treats as "cwd"); a directory fd
+ * returns its inode.  *err is set on failure.
+ */
+static struct inode *path_base(int dirfd, int *err) {
+  struct file *f;
+
+  if (dirfd == AT_FDCWD_K) {
+    *err = 0;
+    return 0;
+  }
+  f = fdget(cur_fds(), dirfd);
+  if (!f || !f->ip) {
+    *err = EBADF;
+    return 0;
+  }
+  if (f->ip->type != T_DIR) {
+    *err = ENOTDIR;
+    return 0;
+  }
+  *err = 0;
+  return f->ip;
+}
+
 /* Anonymous mmap region: a simple bump allocator over the user address space. */
 #define USER_MMAP_BASE 0x30000000u
 static uint32_t mmap_next = USER_MMAP_BASE;
 
+/* Set while a program the shell exec'd is running; on its exit the kernel
+ * reloads the shell. */
+static int shell_exec_active = 0;
+
+void mmap_reset(void) {
+  for (uint32_t va = USER_MMAP_BASE; va < mmap_next; va += 0x1000)
+    vmm_free(va);
+  mmap_next = USER_MMAP_BASE;
+}
+
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp) {
-  (void)esi;
   (void)edi;
   (void)ebp;
   switch (eax) {
@@ -38,6 +75,11 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
 
   case SYS_EXIT:
     print("task exit.\n", 0);
+    if (shell_exec_active) {
+      shell_exec_active = 0;
+      if (process_restore_shell() == 0)
+        break; // iret back into the shell
+    }
     process_exit();
     break;
 
@@ -49,50 +91,12 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
       process_sleep(ebx);
     break;
 
-  case SYS_EXEC: {
-    uint32_t start = ebx; // 起始地址
-    uint32_t size = ecx;  // 大小
-    process_t *p = &processes[current];
-    // 先分配新页
-    uint32_t code_size = size;
-    if (code_size > 4096)
-      code_size = 4096;
-    uint32_t code_page = vmm_alloc();
-    if (!code_page)
-      break;
-
-    // 复制代码（在释放旧页之前）
-    uint8_t *src = (uint8_t *)(uintptr_t)start;
-    uint8_t *dst = (uint8_t *)(uintptr_t)code_page;
-    for (uint32_t i = 0; i < code_size; i++)
-      dst[i] = src[i];
-
-    // 分配新栈
-    uint32_t user_stack_base = vmm_alloc();
-    for (int i = 1; i < 4; i++)
-      vmm_alloc();
-    uint32_t user_stack = user_stack_base + 4 * 4096;
-
-    // 现在释放旧页
-    vmm_free(p->user_code);
-    for (int i = 0; i < 4; i++)
-      vmm_free(p->user_stack - 4096 * (i + 1));
-
-    // patch iret frame so syscall_stub returns into the new program
-    extern uint32_t syscall_kernel_esp;
-    uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
-    iret[0] = code_page;  // EIP
-    iret[3] = user_stack; // ESP_user
-    processes[current].ctx.esp = code_page;
-    processes[current].ctx.ebp = user_stack;
-    processes[current].ctx.ebx = 0;
-    processes[current].ctx.esi = 0;
-    processes[current].ctx.edi = 0;
-    processes[current].user_code = code_page;
-    processes[current].user_stack = user_stack;
-    processes[current].state = PROC_RUNNING;
-    processes[current].parent_pid = 0;
-    break;
+  case SYS_EXECVE: {
+    int r = process_execve((const char *)ebx, (const char *const *)ecx);
+    if (r < 0)
+      return r;
+    shell_exec_active = 1;
+    return 0;
   }
 
   case SYS_WAIT:
@@ -175,6 +179,99 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     if (!f || !f->ip)
       return -EBADF;
     f->ip->mode = (uint16_t)ecx & 07777;
+    return 0;
+  }
+
+  case SYS_CHDIR:
+    fs_errno = 0;
+    if (vfs_chdir((const char *)ebx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_GETCWD:
+    fs_errno = 0;
+    if (vfs_getcwd((char *)ebx, ecx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_OPENAT: {
+    int err;
+    struct inode *base = path_base((int)ebx, &err);
+    if (err)
+      return -err;
+    fs_errno = 0;
+    struct file *f = vfs_open_at(base, (const char *)ecx, (int)edx);
+    if (!f)
+      return -fs_error();
+    int fd = fdalloc(cur_fds(), f);
+    if (fd < 0) {
+      fileclose(f);
+      return -EMFILE;
+    }
+    return fd;
+  }
+
+  case SYS_STATAT: {
+    int err;
+    struct inode *base = path_base((int)ebx, &err);
+    if (err)
+      return -err;
+    fs_errno = 0;
+    if (vfs_stat_at(base, (const char *)ecx, (struct stat *)edx) < 0)
+      return -fs_error();
+    return 0;
+  }
+
+  case SYS_UNLINKAT: {
+    int err;
+    struct inode *base = path_base((int)ebx, &err);
+    if (err)
+      return -err;
+    fs_errno = 0;
+    int r = ((int)edx & AT_REMOVEDIR_K)
+                ? vfs_rmdir_at(base, (const char *)ecx)
+                : vfs_unlink_at(base, (const char *)ecx);
+    if (r < 0)
+      return -fs_error();
+    return 0;
+  }
+
+  case SYS_MKDIRAT: {
+    int err;
+    struct inode *base = path_base((int)ebx, &err);
+    if (err)
+      return -err;
+    fs_errno = 0;
+    if (vfs_mkdir_at(base, (const char *)ecx) < 0)
+      return -fs_error();
+    return 0;
+  }
+
+  case SYS_RENAMEAT: {
+    int e1, e2;
+    struct inode *obase = path_base((int)ebx, &e1);
+    if (e1)
+      return -e1;
+    struct inode *nbase = path_base((int)edx, &e2);
+    if (e2)
+      return -e2;
+    fs_errno = 0;
+    if (vfs_rename_at(obase, (const char *)ecx, nbase, (const char *)esi) < 0)
+      return -fs_error();
+    return 0;
+  }
+
+  case SYS_LINKAT: {
+    int e1, e2;
+    struct inode *obase = path_base((int)ebx, &e1);
+    if (e1)
+      return -e1;
+    struct inode *nbase = path_base((int)edx, &e2);
+    if (e2)
+      return -e2;
+    fs_errno = 0;
+    if (vfs_link_at(obase, (const char *)ecx, nbase, (const char *)esi) < 0)
+      return -fs_error();
     return 0;
   }
 

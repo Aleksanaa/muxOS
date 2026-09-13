@@ -15,11 +15,6 @@
 
       buildTools = pkgs.callPackage ./nix/build-tools.nix { inherit cross; };
 
-      muxos = pkgs.callPackage ./nix/pkgs/muxos {
-        inherit buildTools;
-        src = self;
-      };
-
       mlibc = pkgs.callPackage ./nix/pkgs/mlibc {
         cross = linuxCross;
         mlibcPort = ./ports/mlibc/sysdeps/muxos;
@@ -39,12 +34,13 @@
         helloLd = ./ports/mlibc/hello.ld;
       };
 
-      muxos-mlibc = pkgs.callPackage ./nix/pkgs/muxos-mlibc {
-        inherit muxos hello;
-      };
-
-      muxos-toybox = pkgs.callPackage ./nix/pkgs/muxos-toybox {
-        inherit muxos toybox;
+      muxos = pkgs.callPackage ./nix/pkgs/muxos {
+        inherit buildTools;
+        src = self;
+        programs = map (t: {
+          name = t;
+          path = "${toybox}/bin/${t}";
+        }) toybox.toys;
       };
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''
@@ -64,8 +60,6 @@
 
       packages.${system} = {
         default = muxos;
-        muxos-mlibc = muxos-mlibc;
-        muxos-toybox = muxos-toybox;
         mlibc = mlibc;
         hello = hello;
         toybox = toybox;
@@ -75,10 +69,6 @@
         default = {
           type = "app";
           program = "${runQemu muxos}/bin/muxos-run";
-        };
-        mlibc = {
-          type = "app";
-          program = "${runQemu muxos-mlibc}/bin/muxos-run";
         };
       };
     };

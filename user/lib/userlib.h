@@ -9,7 +9,7 @@ int sys_write(int fd, const char *buf, int len);
 void sys_exit();
 void sys_sleep(int ticks);
 int sys_fork();
-int sys_exec(uint32_t start, uint32_t size);
+int sys_execve(const char *path, char **argv);
 int sys_wait();
 int sys_read(int fd, void *buf, unsigned int count);
 int sys_restart(void);
@@ -31,6 +31,7 @@ int sys_mkdir(const char *path);
 int sys_unlink(const char *path);
 int sys_getdents(int fd, struct dirent *buf, int max);
 int sys_dup(int fd);
+int sys_chdir(const char *path);
 
 /* string */
 int strlen(const char *s);

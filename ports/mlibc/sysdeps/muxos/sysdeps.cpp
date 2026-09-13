@@ -24,6 +24,7 @@
 #define KSYS_READ 0
 #define KSYS_WRITE 1
 #define KSYS_EXIT 2
+#define KSYS_EXECVE 5
 #define KSYS_OPEN 8
 #define KSYS_CLOSE 9
 #define KSYS_LINK 12
@@ -44,6 +45,14 @@
 #define KSYS_DUP2 36
 #define KSYS_CHMOD 37
 #define KSYS_FCHMOD 38
+#define KSYS_CHDIR 39
+#define KSYS_GETCWD 40
+#define KSYS_OPENAT 41
+#define KSYS_STATAT 42
+#define KSYS_UNLINKAT 43
+#define KSYS_MKDIRAT 44
+#define KSYS_RENAMEAT 45
+#define KSYS_LINKAT 46
 
 #define MUX_DIRSIZ 32
 
@@ -83,79 +92,20 @@ extern "C" int ioctl(int fd, unsigned long request, ...) {
 
 namespace mlibc {
 
-static char g_cwd[256] = "/";
-
 /*
- * Lexically normalize an absolute path: collapse "//", drop ".", and resolve
- * "..".  This is what makes getcwd() and "cd .." behave.
+ * Relative paths are resolved by the kernel against its cwd, so this only
+ * validates and bounds the string.
  */
-static int normalize_path(const char *in, char *out, size_t outsz) {
-	size_t n = 0;
-	const char *p = in;
-
-	if (outsz < 2)
-		return ERANGE;
-	out[n++] = '/';
-
-	while (*p) {
-		while (*p == '/')
-			p++;
-		if (!*p)
-			break;
-
-		const char *s = p;
-		while (*p && *p != '/')
-			p++;
-		size_t len = (size_t)(p - s);
-
-		if (len == 1 && s[0] == '.')
-			continue;
-		if (len == 2 && s[0] == '.' && s[1] == '.') {
-			if (n > 1) {
-				n--;
-				while (n > 0 && out[n - 1] != '/')
-					n--;
-				if (n == 0)
-					n = 1;
-			}
-			continue;
-		}
-
-		if (n + len + 1 >= outsz)
-			return ENAMETOOLONG;
-		memcpy(out + n, s, len);
-		n += len;
-		out[n++] = '/';
-	}
-
-	if (n > 1 && out[n - 1] == '/')
-		n--;
-	out[n] = 0;
-	return 0;
-}
-
-/* Turn a possibly-relative path into a normalized absolute one. */
 static int resolve_path(const char *path, char *out, size_t outsz) {
-	char tmp[512];
+	size_t n;
 
 	if (!path || !*path)
 		return ENOENT;
-
-	if (path[0] == '/') {
-		if (strlen(path) >= sizeof(tmp))
-			return ENAMETOOLONG;
-		strcpy(tmp, path);
-	} else {
-		size_t cl = strlen(g_cwd);
-		size_t pl = strlen(path);
-		if (cl + 1 + pl >= sizeof(tmp))
-			return ENAMETOOLONG;
-		memcpy(tmp, g_cwd, cl);
-		tmp[cl] = '/';
-		memcpy(tmp + cl + 1, path, pl + 1);
-	}
-
-	return normalize_path(tmp, out, outsz);
+	n = strlen(path);
+	if (n >= outsz)
+		return ENAMETOOLONG;
+	memcpy(out, path, n + 1);
+	return 0;
 }
 
 static void fill_stat(struct stat *st, const struct muxos_stat *ks) {
@@ -239,28 +189,23 @@ int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg,
 }
 
 int Sysdeps<GetCwd>::operator()(char *buffer, size_t size) {
-	size_t n = strlen(g_cwd) + 1;
-	if (size < n)
-		return ERANGE;
-	memcpy(buffer, g_cwd, n);
+	long r = syscall(KSYS_GETCWD, buffer, size);
+	if (r < 0)
+		return (int)-r;
 	return 0;
 }
 
 int Sysdeps<Chdir>::operator()(const char *path) {
-	char abs[256];
-	int e = resolve_path(path, abs, sizeof(abs));
-	if (e)
-		return e;
-
-	struct muxos_stat ks;
-	long r = syscall(KSYS_STAT, abs, &ks);
+	long r = syscall(KSYS_CHDIR, path);
 	if (r < 0)
 		return (int)-r;
-	if (ks.type != MUX_T_DIR)
-		return ENOTDIR;
-
-	strcpy(g_cwd, abs);
 	return 0;
+}
+
+int Sysdeps<Execve>::operator()(const char *path, char *const argv[],
+		char *const envp[]) {
+	long r = syscall(KSYS_EXECVE, path, argv, envp);
+	return r < 0 ? (int)-r : 0;
 }
 
 int Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_size,
@@ -295,10 +240,13 @@ int Sysdeps<Access>::operator()(const char *path, int mode) {
 
 int Sysdeps<Faccessat>::operator()(int dirfd, const char *pathname, int mode,
 		int flags) {
+	(void)mode;
 	(void)flags;
-	if (dirfd != AT_FDCWD)
-		return ENOSYS;
-	return Sysdeps<Access>::operator()(pathname, mode);
+	struct muxos_stat ks;
+	long r = syscall(KSYS_STATAT, dirfd, pathname, &ks);
+	if (r < 0)
+		return (int)-r;
+	return 0;
 }
 
 int Sysdeps<Write>::operator()(int fd, const void *buf, size_t count,
@@ -336,6 +284,18 @@ int Sysdeps<Open>::operator()(const char *pathname, int flags, mode_t mode,
 	return 0;
 }
 
+int Sysdeps<Openat>::operator()(int dirfd, const char *pathname, int flags,
+		mode_t mode, int *fd) {
+	(void)mode;
+	int kflags = flags & (O_RDONLY | O_WRONLY | O_RDWR | O_CREAT | O_EXCL |
+			O_TRUNC | O_APPEND);
+	long r = syscall(KSYS_OPENAT, dirfd, pathname, kflags);
+	if (r < 0)
+		return (int)-r;
+	*fd = (int)r;
+	return 0;
+}
+
 int Sysdeps<Close>::operator()(int fd) {
 	long r = syscall(KSYS_CLOSE, fd);
 	if (r < 0)
@@ -360,16 +320,14 @@ int Sysdeps<Stat>::operator()(fsfd_target fsfdt, int fd, const char *path,
 
 	if (fsfdt == fsfd_target::fd) {
 		r = syscall(KSYS_FSTAT, fd, &ks);
+	} else if (fsfdt == fsfd_target::fd_path) {
+		if (!path)
+			return EFAULT;
+		r = syscall(KSYS_STATAT, fd, path, &ks);
 	} else {
 		if (!path)
 			return EFAULT;
-		if (fsfdt == fsfd_target::fd_path && fd != AT_FDCWD)
-			return ENOSYS;
-		char abs[256];
-		int e = resolve_path(path, abs, sizeof(abs));
-		if (e)
-			return e;
-		r = syscall(KSYS_STAT, abs, &ks);
+		r = syscall(KSYS_STAT, path, &ks);
 	}
 
 	if (r < 0)
@@ -457,9 +415,11 @@ int Sysdeps<Mkdir>::operator()(const char *path, mode_t mode) {
 }
 
 int Sysdeps<Mkdirat>::operator()(int dirfd, const char *path, mode_t mode) {
-	if (dirfd != AT_FDCWD)
-		return ENOSYS;
-	return Sysdeps<Mkdir>::operator()(path, mode);
+	(void)mode;
+	long r = syscall(KSYS_MKDIRAT, dirfd, path);
+	if (r < 0)
+		return (int)-r;
+	return 0;
 }
 
 int Sysdeps<Rmdir>::operator()(const char *path) {
@@ -474,14 +434,7 @@ int Sysdeps<Rmdir>::operator()(const char *path) {
 }
 
 int Sysdeps<Unlinkat>::operator()(int dirfd, const char *path, int flags) {
-	if (dirfd != AT_FDCWD)
-		return ENOSYS;
-	char abs[256];
-	int e = resolve_path(path, abs, sizeof(abs));
-	if (e)
-		return e;
-	long r = (flags & AT_REMOVEDIR) ? syscall(KSYS_RMDIR, abs)
-	                                : syscall(KSYS_UNLINK, abs);
+	long r = syscall(KSYS_UNLINKAT, dirfd, path, flags);
 	if (r < 0)
 		return (int)-r;
 	return 0;
@@ -503,9 +456,10 @@ int Sysdeps<Rename>::operator()(const char *path, const char *new_path) {
 
 int Sysdeps<Renameat>::operator()(int olddirfd, const char *old_path,
 		int newdirfd, const char *new_path) {
-	if (olddirfd != AT_FDCWD || newdirfd != AT_FDCWD)
-		return ENOSYS;
-	return Sysdeps<Rename>::operator()(old_path, new_path);
+	long r = syscall(KSYS_RENAMEAT, olddirfd, old_path, newdirfd, new_path);
+	if (r < 0)
+		return (int)-r;
+	return 0;
 }
 
 int Sysdeps<Link>::operator()(const char *old_path, const char *new_path) {
@@ -525,9 +479,10 @@ int Sysdeps<Link>::operator()(const char *old_path, const char *new_path) {
 int Sysdeps<Linkat>::operator()(int olddirfd, const char *old_path,
 		int newdirfd, const char *new_path, int flags) {
 	(void)flags;
-	if (olddirfd != AT_FDCWD || newdirfd != AT_FDCWD)
-		return ENOSYS;
-	return Sysdeps<Link>::operator()(old_path, new_path);
+	long r = syscall(KSYS_LINKAT, olddirfd, old_path, newdirfd, new_path);
+	if (r < 0)
+		return (int)-r;
+	return 0;
 }
 
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {

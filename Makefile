@@ -41,10 +41,12 @@ USER_EMBED := $(BUILD)/user_embedded.elf
 USER_BLOB  := $(BUILD)/user_elf.o
 KERNEL_OBJS += $(USER_BLOB)
 
-# Initial argv for the user process, space separated.
-USER_ARGV  ?= init
-GEN_ARGV   := $(BUILD)/user_argv.c
-KERNEL_OBJS += $(BUILD)/user_argv.o
+# Programs copied into /bin at boot: a space separated list of name=path
+# pairs.  Each is embedded in the kernel image with .incbin and exposed via
+# the table in kernel/fs/programs.h.
+PROGRAMS     ?=
+GEN_PROGRAMS := $(BUILD)/programs.S
+KERNEL_OBJS  += $(BUILD)/programs.o
 
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
@@ -64,15 +66,31 @@ $(BUILD)/%.o: %.s
 # Interrupt code cannot rely on SSE register state.
 $(BUILD)/drivers/input/keyboard.o: CFLAGS += -mgeneral-regs-only
 
-$(GEN_ARGV):
+# Always regenerate: PROGRAMS is not a file dependency make can track.
+$(GEN_PROGRAMS): FORCE
 	@mkdir -p $(@D)
-	@{ printf 'const char *user_init_argv[] = { '; \
-	   for a in $(USER_ARGV); do printf '"%s", ' "$$a"; done; \
-	   printf '0 };\n'; } > $@
+	@{ \
+	  printf '.section .rodata\n.align 4\n'; \
+	  printf '.global embedded_program_count\nembedded_program_count:\n.long %d\n' $(words $(PROGRAMS)); \
+	  printf '.global embedded_programs\nembedded_programs:\n'; \
+	  i=0; for p in $(PROGRAMS); do \
+	    printf '.long .Lpname%d\n.long .Lpstart%d\n.long .Lpend%d\n' $$i $$i $$i; \
+	    i=$$((i+1)); \
+	  done; \
+	  i=0; for p in $(PROGRAMS); do \
+	    n=$${p%%=*}; f=$${p#*=}; \
+	    printf '.Lpname%d:\n.asciz "%s"\n' $$i "$$n"; \
+	    printf '.Lpstart%d:\n.incbin "%s"\n.Lpend%d:\n' $$i "$$f" $$i; \
+	    i=$$((i+1)); \
+	  done; \
+	} > $@
 
-$(BUILD)/user_argv.o: $(GEN_ARGV)
+$(BUILD)/programs.o: $(GEN_PROGRAMS)
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+	$(CC) -m32 -c $< -o $@
+
+.PHONY: FORCE
+FORCE:
 
 ifeq ($(USER_ELF),$(BUILD)/user.elf)
 $(BUILD)/user.elf: $(USER_OBJS) user/user.ld

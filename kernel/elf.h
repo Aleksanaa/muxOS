@@ -36,8 +36,14 @@ typedef struct {
 #define EM_386 3
 #define PT_LOAD 1
 
+struct inode;
+
 /* Map every PT_LOAD segment and return the entry point.  Returns 0 on
  * success, -1 if the image is malformed or a page cannot be mapped. */
 int elf_load(const void *image, uint32_t size, uint32_t *entry);
+
+/* Same, but reads the image from an open inode, so a multi-megabyte program
+ * never has to be staged in a kernel buffer. */
+int elf_load_inode(struct inode *ip, uint32_t *entry);
 
 #endif
