@@ -146,7 +146,12 @@ stdenv.mkDerivation {
     mkdir -p generated
     export KCONFIG_CONFIG=.config
     make allnoconfig
-    sed -i 's/# CONFIG_TOYBOX is not set/CONFIG_TOYBOX=y/' .config
+    sed -i \
+      -e 's/# CONFIG_TOYBOX is not set/CONFIG_TOYBOX=y/' \
+      -e 's/# CONFIG_TOYBOX_HELP is not set/CONFIG_TOYBOX_HELP=y/' \
+      -e 's/# CONFIG_TOYBOX_HELP_DASHDASH is not set/CONFIG_TOYBOX_HELP_DASHDASH=y/' \
+      -e 's/# CONFIG_TOYBOX_FLOAT is not set/CONFIG_TOYBOX_FLOAT=y/' \
+      .config
 
     for i in ${lib.concatStringsSep " " toys}; do
       TOYFILE="$(grep -l "TOY($i[ ,]" toys/*/*.c | head -1)"
