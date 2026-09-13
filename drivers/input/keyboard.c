@@ -47,6 +47,12 @@ static const char shift_map[128] = {
 
 static volatile int shift = 0;
 static volatile int ctrl = 0;
+static volatile int e0 = 0; // next scancode is an 0xE0-prefixed extended key
+
+static void kb_push_str(const char *s) {
+  while (*s)
+    kb_buf_push(*s++);
+}
 
 __attribute__((interrupt)) void
 keyboard_handler(struct interrupt_frame *frame) {
@@ -58,8 +64,34 @@ keyboard_handler(struct interrupt_frame *frame) {
       shift = 0;
     if (sc == 0x1D)
       ctrl = 0;
+    e0 = 0;
+  } else if (scancode == 0xE0) {
+    e0 = 1;
+    pic_eoi(1);
+    return;
+  } else if (e0) {
+    e0 = 0;
+    switch (scancode) {
+    case 0x48: kb_push_str("\x1b[A"); break; // up
+    case 0x50: kb_push_str("\x1b[B"); break; // down
+    case 0x4D: kb_push_str("\x1b[C"); break; // right
+    case 0x4B: kb_push_str("\x1b[D"); break; // left
+    case 0x47: kb_push_str("\x1b[H"); break; // home
+    case 0x4F: kb_push_str("\x1b[F"); break; // end
+    case 0x49: kb_push_str("\x1b[5~"); break; // page up
+    case 0x51: kb_push_str("\x1b[6~"); break; // page down
+    case 0x52: kb_push_str("\x1b[2~"); break; // insert
+    case 0x53: kb_push_str("\x1b[3~"); break; // delete
+    }
+    pic_eoi(1);
+    return;
   } else {
     // key press
+    if (scancode == 0x01) { // ESC
+      kb_buf_push(0x1b);
+      pic_eoi(1);
+      return;
+    }
     if (scancode == 0x2A || scancode == 0x36) {
       shift = 1;
       pic_eoi(1);

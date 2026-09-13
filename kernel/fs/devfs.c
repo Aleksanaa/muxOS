@@ -7,7 +7,10 @@
 
 #include "console.h"
 #include "fs.h"
+#include "keyboard.h"
 #include "process.h"
+#include "serial.h"
+#include "terminal.h"
 #include "vga.h"
 
 struct devsw devsw[NDEV];
@@ -30,6 +33,31 @@ static int console_read(void *buf, int n) {
   asm volatile("sti");
   char *b = (char *)buf;
   int i = 0;
+  int mode = terminal_mode();
+
+  /* Raw mode (vi & friends): no echo, no line buffering, no editing.  Return
+   * whatever is available after the first byte so read() doesn't block for a
+   * whole line. */
+  if (!(mode & TTY_CANON)) {
+    while (i < n) {
+      int from_kb = 0;
+      char c = console_getchar_src(&from_kb);
+      if (c == '\r')
+        c = '\n'; /* ICRNL */
+      if ((mode & TTY_ISIG) && c == '\x03') {
+        int fg = foreground_pgid;
+        process_kill(fg ? -fg : (int)processes[current].pid, SIGINT);
+        if (processes[current].sig_handler[SIGINT] == 1)
+          continue;
+        return -EINTR;
+      }
+      b[i++] = c;
+      if (!kb_haschar() && !serial_haschar())
+        break;
+    }
+    return i;
+  }
+
   while (i < n) {
     int from_kb = 0;
     char c = console_getchar_src(&from_kb);
@@ -59,7 +87,7 @@ static int console_read(void *buf, int n) {
       if (i > 0) {
         i--;
         if (from_kb)
-          vga_backspace();
+          print("\b \b", 0x07); /* erase through the terminal */
       }
       continue;
     }

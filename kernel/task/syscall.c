@@ -2,6 +2,7 @@
 #include "console.h"
 #include "gdt.h"
 #include "process.h"
+#include "../tty/terminal.h"
 #include "../../drivers/input/keyboard.h"
 #include "../../drivers/platform/reboot.h"
 #include "../../drivers/video/vga.h"
@@ -127,6 +128,13 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
 
   case SYS_TCSETPGRP:
     foreground_pgid = (int)ebx;
+    return 0;
+
+  case SYS_TTYGETMODE:
+    return terminal_mode();
+
+  case SYS_TTYSETMODE:
+    terminal_set_mode((int)ebx);
     return 0;
 
   case SYS_RESTART_SYSCALL:
@@ -458,7 +466,7 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     return console_getchar();
 
   case SYS_VGASPACE:
-    vga_backspace();
+    print("\b \b", 0x07);
     break;
 
   case SYS_GETPID:

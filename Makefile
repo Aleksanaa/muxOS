@@ -11,7 +11,7 @@ ISO     := $(BUILD)/muxos.iso
 ISO_DIR := $(BUILD)/isodir
 
 CPPFLAGS := -I. -Iarch/x86 -Iarch/x86/include \
-            -Ikernel -Ikernel/lib -Ikernel/mm -Ikernel/task -Ikernel/fs \
+            -Ikernel -Ikernel/lib -Ikernel/mm -Ikernel/task -Ikernel/fs -Ikernel/tty \
             -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video
 CFLAGS   := -m32 -ffreestanding -fno-builtin -fno-pic -O0 -g \
             -Wall -Wextra -MMD -MP

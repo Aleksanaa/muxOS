@@ -75,6 +75,7 @@ struct MuxosSysdepTags :
 	Dup2,
 	Fcntl,
 	Pipe,
+	Poll,
 	Sleep,
 	Uname
 {};

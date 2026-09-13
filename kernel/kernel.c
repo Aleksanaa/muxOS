@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "process.h"
 #include "serial.h"
+#include "terminal.h"
 #include "tss.h"
 #include "vga.h"
 #include "vmm.h"
@@ -35,6 +36,7 @@ int kernel_main(uint32_t magic, multiboot_info_t *mbi) {
   pit_init(1000);
   idt_init();
   serial_init();
+  terminal_init();
   pmm_init(mbi);
   vmm_init();
   keyboard_init();

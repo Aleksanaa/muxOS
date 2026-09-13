@@ -65,6 +65,8 @@
 #define SYS_SETSID 55
 #define SYS_TCGETPGRP 56
 #define SYS_TCSETPGRP 57
+#define SYS_TTYGETMODE 58
+#define SYS_TTYSETMODE 59
 void syscall_init();
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp);

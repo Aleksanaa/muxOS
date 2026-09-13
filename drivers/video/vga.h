@@ -24,8 +24,6 @@ enum vga_color {
 	VGA_COLOR_WHITE = 15,
 };
 void print(const char *str, unsigned char color);
-void vga_backspace(void);
-static void update_hw_cursor();
 void print_at(const char *str, const int x, const int y, unsigned char color);
 void clear_screen();
 void print_hex(uint32_t val) ;

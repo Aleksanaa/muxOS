@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
@@ -81,6 +82,8 @@
 #define KSYS_SETSID 55
 #define KSYS_TCGETPGRP 56
 #define KSYS_TCSETPGRP 57
+#define KSYS_TTYGETMODE 58
+#define KSYS_TTYSETMODE 59
 
 #define MUX_DIRSIZ 32
 
@@ -278,6 +281,18 @@ int Sysdeps<SetSid>::operator()(pid_t *sid) {
 int Sysdeps<Tcgetattr>::operator()(int fd, struct termios *attr) {
 	(void)fd;
 	fill_termios(attr);
+	/* Overlay the line-discipline bits the kernel console actually honours. */
+	long r = syscall(KSYS_TTYGETMODE);
+	if (r >= 0) {
+		int mode = (int)r;
+		attr->c_lflag = 0;
+		if (mode & 1)
+			attr->c_lflag |= ICANON;
+		if (mode & 2)
+			attr->c_lflag |= ECHO;
+		if (mode & 4)
+			attr->c_lflag |= ISIG;
+	}
 	return 0;
 }
 
@@ -285,7 +300,35 @@ int Sysdeps<Tcsetattr>::operator()(int fd, int actions,
 		const struct termios *attr) {
 	(void)fd;
 	(void)actions;
-	(void)attr;
+	int mode = 0;
+	if (attr->c_lflag & ICANON)
+		mode |= 1;
+	if (attr->c_lflag & ECHO)
+		mode |= 2;
+	if (attr->c_lflag & ISIG)
+		mode |= 4;
+	syscall(KSYS_TTYSETMODE, mode);
+	return 0;
+}
+
+int Sysdeps<Poll>::operator()(struct pollfd *fds, nfds_t count, int timeout,
+		int *num_events) {
+	(void)timeout;
+	int ready = 0;
+	for (nfds_t i = 0; i < count; i++) {
+		fds[i].revents = 0;
+		if (fds[i].fd < 0)
+			continue;
+		/* Reads block in the kernel and writes never block, so everything
+		 * is always ready; blocking is deferred to read()/write(). */
+		if (fds[i].events & POLLIN)
+			fds[i].revents |= POLLIN;
+		if (fds[i].events & POLLOUT)
+			fds[i].revents |= POLLOUT;
+		if (fds[i].revents)
+			ready++;
+	}
+	*num_events = ready;
 	return 0;
 }
 
