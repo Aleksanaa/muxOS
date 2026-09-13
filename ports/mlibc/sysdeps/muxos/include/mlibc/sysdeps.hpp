@@ -26,6 +26,8 @@ struct MuxosSysdepTags :
 	ClockGet,
 	GetPid,
 	GetPpid,
+	Fork,
+	Waitpid,
 	Umask,
 	Sigaction,
 	Sigprocmask,

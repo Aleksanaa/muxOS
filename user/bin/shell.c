@@ -80,10 +80,23 @@ static void cmd_exec(char **argv) {
   }
   path[sizeof(path) - 1] = 0;
 
-  sys_execve(path, argv); /* only returns on failure */
-  puts("muxsh: ");
-  puts(cmd);
-  puts(": not found\n");
+  int pid = sys_fork();
+  if (pid < 0) {
+    puts("muxsh: fork failed\n");
+    return;
+  }
+  if (pid == 0) {
+    sys_execve(path, argv); /* only returns on failure */
+    puts("muxsh: ");
+    puts(cmd);
+    puts(": not found\n");
+    sys_exit();
+    for (;;)
+      ;
+  }
+  /* Stay resident; reap the child before prompting again. */
+  while (sys_wait() < 0)
+    ;
 }
 
 static void usage(void) {

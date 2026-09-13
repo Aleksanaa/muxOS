@@ -16,12 +16,13 @@ extern syscall_kernel_esp
 extern tss_set_kernel_stack
 
 ; process_t 各字段在结构体中的偏移（与 process.h 保持同步）
-PROCESS_SIZE      equ 248 ; sizeof(process_t) (guarded by _Static_assert in process.h)
+PROCESS_SIZE      equ 256 ; sizeof(process_t) (guarded by _Static_assert in process.h)
 CTX_ESP_OFF       equ 4   ; offsetof(process_t, ctx.esp)
 STATE_OFF         equ 24  ; offsetof(process_t, state)
 STARTED_OFF       equ 28  ; offsetof(process_t, started)
 KERNEL_STACK_OFF  equ 32  ; offsetof(process_t, kernel_stack)
 SLEEP_TICKS_OFF   equ 36  ; offsetof(process_t, sleep_ticks)
+PDIR_OFF          equ 248 ; offsetof(process_t, pdir)
 PROC_ZOMBIE       equ 2
 
 ; -----------------------------------------------------------------------
@@ -130,6 +131,9 @@ irq0_stub:
     pop eax                           ; 恢复 &processes[new]
 
 .kernel_stack_ready:
+    ; 切换到新进程的地址空间
+    mov ecx, [eax + PDIR_OFF]
+    mov cr3, ecx
     ; 切换内核栈到新进程保存的 esp
     mov esp, [eax + CTX_ESP_OFF]
 
@@ -276,6 +280,8 @@ syscall_stub:
     jnz .zombie_switch_started
     mov dword [eax + STARTED_OFF], 1
 .zombie_switch_started:
+    mov ecx, [eax + PDIR_OFF]
+    mov cr3, ecx
     mov esp, [eax + CTX_ESP_OFF]
     jmp .sleep_done
 
@@ -307,6 +313,8 @@ syscall_stub:
     mov dword [eax + STARTED_OFF], 1
 
 .sleep_already_started:
+    mov ecx, [eax + PDIR_OFF]
+    mov cr3, ecx
     mov esp, [eax + CTX_ESP_OFF]
 
 .sleep_done:

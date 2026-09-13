@@ -44,13 +44,9 @@ static struct inode *path_base(int dirfd, int *err) {
 #define USER_MMAP_BASE 0x30000000u
 static uint32_t mmap_next = USER_MMAP_BASE;
 
-/* Set while a program the shell exec'd is running; on its exit the kernel
- * reloads the shell. */
-static int shell_exec_active = 0;
-
 void mmap_reset(void) {
   for (uint32_t va = USER_MMAP_BASE; va < mmap_next; va += 0x1000)
-    vmm_free(va);
+    vmm_free(processes[current].pdir, va);
   mmap_next = USER_MMAP_BASE;
 }
 
@@ -74,9 +70,9 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
   }
 
   case SYS_EXIT:
-    print("task exit.\n", 0);
-    if (shell_exec_active) {
-      shell_exec_active = 0;
+    if (processes[current].pid == (uint32_t)shell_pid &&
+        processes[current].exec_active) {
+      processes[current].exec_active = 0;
       if (process_restore_shell() == 0)
         break; // iret back into the shell
     }
@@ -95,7 +91,7 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     int r = process_execve((const char *)ebx, (const char *const *)ecx);
     if (r < 0)
       return r;
-    shell_exec_active = 1;
+    processes[current].exec_active = 1;
     return 0;
   }
 
@@ -377,7 +373,7 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     uint32_t base = mmap_next;
     for (uint32_t i = 0; i < pages; i++) {
       uint32_t va = base + i * 0x1000u;
-      if (!vmm_alloc_at(va))
+      if (!vmm_alloc_at(processes[current].pdir, va))
         return -1;
       kmemset((void *)(uintptr_t)va, 0, 0x1000);
     }

@@ -33,9 +33,11 @@ typedef struct {
   uint32_t exit_code;  // 退出时存在这里
   char process_name[128];
   struct file *fds[FD_MAX]; // per-process open file descriptors
+  uint32_t pdir;            // physical address of this process's page directory
+  uint32_t exec_active;     // this process is running an exec'd image
 } process_t;
 
-_Static_assert(sizeof(process_t) == 248, "update PROCESS_SIZE in switch.s");
+_Static_assert(sizeof(process_t) == 256, "update PROCESS_SIZE in switch.s");
 typedef struct {
   uint32_t pid;
   uint32_t parent_pid;
@@ -62,5 +64,6 @@ int process_get_count(void);
 extern process_t processes[MAX_PROCESSES];
 extern int process_count;
 extern int current;
+extern int shell_pid;
 extern uint32_t syscall_kernel_esp;
 #endif

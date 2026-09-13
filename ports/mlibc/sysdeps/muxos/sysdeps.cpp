@@ -24,7 +24,10 @@
 #define KSYS_READ 0
 #define KSYS_WRITE 1
 #define KSYS_EXIT 2
+#define KSYS_SLEEP 3
+#define KSYS_FORK 4
 #define KSYS_EXECVE 5
+#define KSYS_WAIT 6
 #define KSYS_OPEN 8
 #define KSYS_CLOSE 9
 #define KSYS_LINK 12
@@ -154,6 +157,32 @@ pid_t Sysdeps<GetPid>::operator()() {
 }
 
 pid_t Sysdeps<GetPpid>::operator()() { return 0; }
+
+int Sysdeps<Fork>::operator()(pid_t *child) {
+	long r = syscall(KSYS_FORK);
+	if (r < 0)
+		return (int)-r;
+	*child = (pid_t)r;
+	return 0;
+}
+
+int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags,
+		struct rusage *ru, pid_t *ret_pid) {
+	(void)pid;
+	(void)flags;
+	(void)ru;
+	/* The kernel waits for any child; retry (yielding) until one is reaped. */
+	for (;;) {
+		long r = syscall(KSYS_WAIT);
+		if (r >= 0) {
+			if (status)
+				*status = 0;
+			*ret_pid = (pid_t)r;
+			return 0;
+		}
+		syscall(KSYS_SLEEP, 1);
+	}
+}
 
 int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
 	(void)mode;

@@ -10,6 +10,7 @@
 process_t processes[MAX_PROCESSES];
 int current = 0;
 int process_count = 0;
+int shell_pid = -1;
 
 extern void enter_usermode(uint32_t entry, uint32_t stack);
 
@@ -81,7 +82,8 @@ void process_register_current() {
   processes[0].pid = 0;
   processes[0].started = 1;
   processes[0].kernel_stack = 0;
-  processes[process_count].state = PROC_RUNNING;
+  processes[0].state = PROC_RUNNING;
+  processes[0].pdir = vmm_kernel_pdir();
   kstrcpy(processes[0].process_name, "bootstrap");
   fd_init(processes[0].fds);
   process_count = 1;
@@ -125,6 +127,8 @@ void process_schedule() {
   int old = current;
   current = next;
 
+  vmm_switch_pdir(processes[next].pdir);
+
   if (!processes[next].started) {
     processes[next].started = 1;
     process_enter(&processes[old].ctx, &processes[current].ctx);
@@ -154,6 +158,7 @@ void process_create_kernel(void (*entry)()) {
   processes[process_count].started = 0;
   processes[process_count].kernel_stack = 0;
   processes[process_count].state = PROC_RUNNING;
+  processes[process_count].pdir = vmm_kernel_pdir();
   kstrcpy(processes[process_count].process_name, "kernel_init");
   fd_init(processes[process_count].fds);
   process_count++;
@@ -164,20 +169,32 @@ void process_create_user(void) {
   uint32_t entry = 0;
   uint32_t elf_size = (uint32_t)(_binary_build_user_embedded_elf_end -
                                  _binary_build_user_embedded_elf_start);
-  if (elf_load(_binary_build_user_embedded_elf_start, elf_size, &entry) < 0) {
+
+  uint32_t pdir = vmm_create_pdir();
+  if (!pdir) {
+    print("pdir alloc failed\n", 0x0C);
+    return;
+  }
+  if (elf_load(pdir, _binary_build_user_embedded_elf_start, elf_size, &entry) <
+      0) {
     print("elf load failed\n", 0x0C);
     return;
   }
 
   uint32_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096u;
   for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
-    if (!vmm_alloc_at(stack_base + i * 4096)) {
+    if (!vmm_alloc_at(pdir, stack_base + i * 4096)) {
       print("user stack map failed\n", 0x0C);
       return;
     }
   }
+
+  /* Build the stack through the new address space. */
+  uint32_t old_pdir = vmm_current_pdir();
+  vmm_switch_pdir(pdir);
   static const char *init_argv[] = { "muxsh", 0 };
   uint32_t user_stack = user_build_stack(init_argv, 1);
+  vmm_switch_pdir(old_pdir);
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
   uint32_t kernel_stack = pmm_alloc();
@@ -185,6 +202,7 @@ void process_create_user(void) {
     return;
   kernel_stack += 4096;
 
+  shell_pid = process_count;
   processes[process_count].pid = process_count;
   processes[process_count].ctx.esp = entry;
   processes[process_count].ctx.ebp = user_stack;
@@ -197,6 +215,8 @@ void process_create_user(void) {
   processes[process_count].user_stack = user_stack;
   processes[process_count].state = PROC_RUNNING;
   processes[process_count].parent_pid = 0;
+  processes[process_count].pdir = pdir;
+  processes[process_count].exec_active = 0;
   fd_init(processes[process_count].fds);
   process_count++;
 }
@@ -257,15 +277,13 @@ void process_exit() {
     return;
   }
 
-  /* 无父进程：直接释放内存并删除。
-   * 注意：ELF 映射的代码/数据页未跟踪，此处不释放（toy 阶段接受泄漏）。 */
-  if (p->kernel_stack != 0) {
-    if (p->user_stack) {
-      for (uint32_t i = 0; i < USER_STACK_PAGES; i++)
-        vmm_free(p->user_stack - 4096 * (i + 1));
-    }
+  /* 无父进程：释放地址空间并删除。先切回内核页目录，才能销毁当前页目录。 */
+  uint32_t dying_pdir = p->pdir;
+  vmm_switch_pdir(vmm_kernel_pdir());
+  if (dying_pdir && dying_pdir != vmm_kernel_pdir())
+    vmm_destroy_pdir(dying_pdir);
+  if (p->kernel_stack != 0)
     pmm_free(p->kernel_stack - 4096);
-  }
 
   for (int i = current; i < process_count - 1; i++)
     processes[i] = processes[i + 1];
@@ -282,6 +300,7 @@ void process_exit() {
   if (current == 0 && process_count > 1)
     current = 1;
 
+  vmm_switch_pdir(processes[current].pdir);
   processes[current].started = 1;
   process_jump(&processes[current].ctx);
 }
@@ -332,13 +351,11 @@ int process_wait() {
     if (processes[i].parent_pid == my_pid &&
         processes[i].state == PROC_ZOMBIE) {
       int pid = processes[i].pid;
-      // free child's memory (fork child has 1 stack page)
-      if (processes[i].user_code)
-        vmm_free(processes[i].user_code);
-      if (processes[i].user_stack)
-        vmm_free(processes[i].user_stack - 4096);
+      uint32_t cpdir = processes[i].pdir;
       if (processes[i].kernel_stack)
         pmm_free(processes[i].kernel_stack - 4096);
+      if (cpdir && cpdir != vmm_kernel_pdir())
+        vmm_destroy_pdir(cpdir);
       // remove from array
       for (int j = i; j < process_count - 1; j++)
         processes[j] = processes[j + 1];
@@ -358,12 +375,56 @@ uint32_t syscall_kernel_esp = 0;
 
 int process_fork(uint32_t child_eax_ret) {
   (void)child_eax_ret;
+  process_t *parent = &processes[current];
+
+  if (process_count >= MAX_PROCESSES)
+    return -1;
+
+  /* Private address space: kernel PDEs plus a deep copy of every user page. */
+  uint32_t cpdir = vmm_create_pdir();
+  if (!cpdir)
+    return -1;
+  vmm_copy_pdir(cpdir, parent->pdir);
+
+  /* Copy the kernel stack so the child resumes from the same syscall. */
+  uint32_t ckstack = pmm_alloc();
+  if (!ckstack) {
+    vmm_destroy_pdir(cpdir);
+    return -1;
+  }
+  if (parent->kernel_stack)
+    kmemcpy((void *)(uintptr_t)ckstack,
+            (void *)(uintptr_t)(parent->kernel_stack - 4096), 4096);
+  uint32_t cktop = ckstack + 4096;
+
+  int child = process_count;
+  process_t *c = &processes[child];
+  kmemset(c, 0, sizeof(*c));
+  c->pid = (uint32_t)child;
+  c->parent_pid = parent->pid;
+  c->pdir = cpdir;
+  c->kernel_stack = cktop;
+  c->user_code = parent->user_code;
+  c->user_stack = parent->user_stack;
+  c->state = PROC_RUNNING;
+  /* ctx.esp already points at a complete pusha/iret frame, so the child is
+   * immediately runnable (unlike process_create_user, which needs the stub's
+   * first-run handling). */
+  c->started = 1;
+  kstrcpy(c->process_name, parent->process_name);
+  fd_fork(parent->fds, c->fds);
+
   /*
-   * TODO: copy the process address space (ELF segments + stack).  The kernel
-   * still runs everything on one shared page directory, so a correct fork is
-   * not possible yet; this becomes necessary alongside mlibc's fork/exec.
+   * The CPU left the ring-3 registers in a pusha frame just below the iret
+   * frame at syscall entry.  Point the child at the copy of that frame and
+   * zero its eax so fork() returns 0 in the child.
    */
-  return -1;
+  uint32_t child_pusha = cktop - (parent->kernel_stack - (syscall_kernel_esp - 32));
+  c->ctx.esp = child_pusha;
+  *(uint32_t *)(uintptr_t)(child_pusha + 28) = 0; // eax
+
+  process_count++;
+  return child;
 }
 
 /*
@@ -406,7 +467,7 @@ int process_execve(const char *path, const char *const *uargv) {
   }
 
   uint32_t entry;
-  if (elf_load_inode(f->ip, &entry) < 0) {
+  if (elf_load_inode(processes[current].pdir, f->ip, &entry) < 0) {
     fileclose(f);
     return -ENOEXEC;
   }
@@ -425,7 +486,8 @@ int process_restore_shell(void) {
   uint32_t entry;
   uint32_t size = (uint32_t)(_binary_build_user_embedded_elf_end -
                              _binary_build_user_embedded_elf_start);
-  if (elf_load(_binary_build_user_embedded_elf_start, size, &entry) < 0)
+  if (elf_load(processes[current].pdir, _binary_build_user_embedded_elf_start,
+               size, &entry) < 0)
     return -1;
   mmap_reset();
   static const char *argv[] = { "muxsh", 0 };
