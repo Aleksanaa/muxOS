@@ -37,6 +37,7 @@ struct inode {
   int major;
   int minor;
   int nlink;
+  uint16_t mode; /* permission bits, see MODE_* in fs_uapi.h */
   uint32_t size;
   uint32_t addrs[NDIRECT];
 };
@@ -57,6 +58,14 @@ struct devsw {
 
 extern struct devsw devsw[];
 
+/*
+ * Last filesystem error, as a positive errno (0 means "no error yet").
+ * VFS operations return -1/NULL on failure and record the reason here; the
+ * syscall layer turns it into a negative errno for userspace.
+ */
+extern int fs_errno;
+int fs_error(void);
+
 /* memfs: inode + content layer */
 void fs_init(void);
 void fs_selftest(void);
@@ -64,6 +73,8 @@ void devsw_init(void);
 struct inode *iget(uint32_t inum);
 struct inode *ialloc(int type, int major, int minor);
 void itrunc(struct inode *ip);
+int itruncate(struct inode *ip, uint32_t size);
+int isdirempty(struct inode *ip);
 void ifree(struct inode *ip);
 int readi(struct inode *ip, void *dst, uint32_t off, uint32_t n);
 int writei(struct inode *ip, const void *src, uint32_t off, uint32_t n);
@@ -80,11 +91,16 @@ void fileclose(struct file *f);
 int fileread(struct file *f, void *buf, int n);
 int filewrite(struct file *f, const void *buf, int n);
 int filestat(struct file *f, struct stat *st);
+int filetruncate(struct file *f, uint32_t size);
 struct inode *namei(const char *path);
 struct inode *nameiparent(const char *path, char *name);
 struct file *vfs_open(const char *path, int flags);
 int vfs_mkdir(const char *path);
 int vfs_unlink(const char *path);
+int vfs_rmdir(const char *path);
+int vfs_rename(const char *oldpath, const char *newpath);
+int vfs_link(const char *oldpath, const char *newpath);
+int vfs_chmod(const char *path, uint16_t mode);
 int fdalloc(struct file **fds, struct file *f);
 struct file *fdget(struct file **fds, int fd);
 void fdclose(struct file **fds, int fd);

@@ -40,6 +40,12 @@
 #define SYS_MMAP 30
 #define SYS_MUNMAP 31
 #define SYS_SET_TLS 32
+#define SYS_RENAME 33
+#define SYS_RMDIR 34
+#define SYS_FTRUNCATE 35
+#define SYS_DUP2 36
+#define SYS_CHMOD 37
+#define SYS_FCHMOD 38
 void syscall_init();
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp);

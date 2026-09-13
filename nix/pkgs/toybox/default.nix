@@ -24,6 +24,25 @@ let
     rev = "0.8.14";
     hash = "sha256-46iKwUSIQ4M9ZL86e4rY4hGcz8y06HZMC0mvNp3jR1s=";
   };
+  # Filesystem-related applets worth having as standalone binaries.
+  toys = [
+    "hello"
+    "echo"
+    "ls"
+    "cat"
+    "cp"
+    "mv"
+    "rm"
+    "mkdir"
+    "rmdir"
+    "touch"
+    "find"
+    "wc"
+    "pwd"
+    "ln"
+    "true"
+    "false"
+  ];
 in
 stdenv.mkDerivation {
   pname = "toybox-muxos";
@@ -63,14 +82,18 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     mkdir -p generated
-    scripts/single.sh hello echo true false
+    scripts/single.sh ${lib.concatStringsSep " " toys}
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/bin"
-    for t in hello echo true false; do cp "$t" "$out/bin/$t"; done
+    for t in ${lib.concatStringsSep " " toys}; do
+      cp "$t" "$out/bin/$t"
+      chmod u+w "$out/bin/$t"
+      ${strip} -s "$out/bin/$t"
+    done
     runHook postInstall
   '';
 }

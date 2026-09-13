@@ -31,7 +31,32 @@ struct MuxosSysdepTags :
 	GetCwd,
 	Chdir,
 	Readlink,
-	Access
+	Readlinkat,
+	Access,
+	Faccessat,
+	Stat,
+	OpenDir,
+	ReadEntries,
+	Mkdir,
+	Mkdirat,
+	Rmdir,
+	Unlinkat,
+	Rename,
+	Renameat,
+	Link,
+	Linkat,
+	Truncate,
+	Ftruncate,
+	Chmod,
+	Fchmod,
+	Fchmodat,
+	Fchownat,
+	Utimensat,
+	Fsync,
+	Sync,
+	Dup,
+	Dup2,
+	Fcntl
 {};
 
 template<typename Tag>

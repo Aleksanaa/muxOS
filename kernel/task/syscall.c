@@ -111,13 +111,14 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     break;
 
   case SYS_OPEN: {
+    fs_errno = 0;
     struct file *f = vfs_open((const char *)ebx, (int)ecx);
     if (!f)
-      return -1;
+      return -fs_error();
     int fd = fdalloc(cur_fds(), f);
     if (fd < 0) {
       fileclose(f);
-      return -1;
+      return -EMFILE;
     }
     return fd;
   }
@@ -127,19 +128,55 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     return 0;
 
   case SYS_CREAT: {
+    fs_errno = 0;
     struct file *f = vfs_open((const char *)ebx, O_CREAT | O_WRONLY | O_TRUNC);
     if (!f)
-      return -1;
+      return -fs_error();
     int fd = fdalloc(cur_fds(), f);
     if (fd < 0) {
       fileclose(f);
-      return -1;
+      return -EMFILE;
     }
     return fd;
   }
 
   case SYS_UNLINK:
-    return vfs_unlink((const char *)ebx);
+    fs_errno = 0;
+    if (vfs_unlink((const char *)ebx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_RMDIR:
+    fs_errno = 0;
+    if (vfs_rmdir((const char *)ebx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_RENAME:
+    fs_errno = 0;
+    if (vfs_rename((const char *)ebx, (const char *)ecx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_LINK:
+    fs_errno = 0;
+    if (vfs_link((const char *)ebx, (const char *)ecx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_CHMOD:
+    fs_errno = 0;
+    if (vfs_chmod((const char *)ebx, (uint16_t)ecx) < 0)
+      return -fs_error();
+    return 0;
+
+  case SYS_FCHMOD: {
+    struct file *f = fdget(cur_fds(), (int)ebx);
+    if (!f || !f->ip)
+      return -EBADF;
+    f->ip->mode = (uint16_t)ecx & 07777;
+    return 0;
+  }
 
   case SYS_LSEEK: {
     struct file *f = fdget(cur_fds(), (int)ebx);
@@ -158,23 +195,33 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
   }
 
   case SYS_STAT: {
+    fs_errno = 0;
     struct inode *ip = namei((const char *)ebx);
     if (!ip)
-      return -1;
+      return -fs_error();
     stati(ip, (struct stat *)ecx);
     return 0;
   }
 
-  case SYS_FSTAT:
-    return filestat(fdget(cur_fds(), (int)ebx), (struct stat *)ecx);
+  case SYS_FSTAT: {
+    struct file *f = fdget(cur_fds(), (int)ebx);
+    if (!f)
+      return -EBADF;
+    return filestat(f, (struct stat *)ecx);
+  }
 
   case SYS_MKDIR:
-    return vfs_mkdir((const char *)ebx);
+    fs_errno = 0;
+    if (vfs_mkdir((const char *)ebx) < 0)
+      return -fs_error();
+    return 0;
 
   case SYS_GETDENTS: {
     struct file *f = fdget(cur_fds(), (int)ebx);
-    if (!f || !f->ip || f->ip->type != T_DIR)
-      return -1;
+    if (!f)
+      return -EBADF;
+    if (!f->ip || f->ip->type != T_DIR)
+      return -ENOTDIR;
     char *ubuf = (char *)ecx;
     int max = (int)edx;
     int written = 0;
@@ -186,10 +233,35 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
       f->off += sizeof(de);
       if (de.inum == 0)
         continue;
+      de.off = f->off;
       kmemcpy(ubuf + written, &de, sizeof(de));
-      written += sizeof(de);
+      written += (int)sizeof(de);
     }
     return written;
+  }
+
+  case SYS_FTRUNCATE: {
+    struct file *f = fdget(cur_fds(), (int)ebx);
+    if (!f)
+      return -EBADF;
+    fs_errno = 0;
+    if (filetruncate(f, ecx) < 0)
+      return -fs_error();
+    return 0;
+  }
+
+  case SYS_DUP2: {
+    int oldfd = (int)ebx, newfd = (int)ecx;
+    struct file *f = fdget(cur_fds(), oldfd);
+    if (!f)
+      return -EBADF;
+    if (oldfd == newfd)
+      return newfd;
+    if (newfd < 0 || newfd >= FD_MAX)
+      return -EBADF;
+    fdclose(cur_fds(), newfd);
+    cur_fds()[newfd] = filedup(f);
+    return newfd;
   }
 
   case SYS_DUP: {

@@ -36,6 +36,9 @@ struct inode *ialloc(int type, int major, int minor) {
       ip->major = major;
       ip->minor = minor;
       ip->nlink = 1;
+      ip->mode = (type == T_DIR) ? MODE_DIR
+               : (type == T_DEVICE) ? MODE_DEV
+                                    : MODE_FILE;
       return ip;
     }
   }
@@ -116,6 +119,38 @@ int writei(struct inode *ip, const void *src, uint32_t off, uint32_t n) {
   return (int)tot;
 }
 
+/*
+ * Resize an inode to `size` bytes: growing allocates and zeroes the newly
+ * exposed range, shrinking frees the whole blocks that fall off the end.
+ */
+int itruncate(struct inode *ip, uint32_t size) {
+  if (size > MAXFILE)
+    return -1;
+  if (size < ip->size) {
+    uint32_t first = (size + BSIZE - 1) / BSIZE;
+    for (uint32_t bn = first; bn < NDIRECT; bn++) {
+      if (ip->addrs[bn]) {
+        pmm_free(ip->addrs[bn]);
+        ip->addrs[bn] = 0;
+      }
+    }
+  } else if (size > ip->size) {
+    for (uint32_t off = ip->size; off < size;) {
+      uint32_t addr = bmap(ip, off / BSIZE);
+      if (addr == 0)
+        return -1;
+      uint32_t bo = off % BSIZE;
+      uint32_t span = BSIZE - bo;
+      if (span > size - off)
+        span = size - off;
+      kmemset((void *)(uintptr_t)(addr + bo), 0, span);
+      off += span;
+    }
+  }
+  ip->size = size;
+  return 0;
+}
+
 static int namecmp(const char *a, const char *b) {
   return kstrncmp(a, b, DIRSIZ);
 }
@@ -177,9 +212,25 @@ int dirunlink(struct inode *dp, const char *name) {
   return (int)inum;
 }
 
+/* A directory is empty when it contains nothing but "." and "..". */
+int isdirempty(struct inode *ip) {
+  struct dirent de;
+  for (uint32_t off = 0; off < ip->size; off += sizeof(de)) {
+    if (readi(ip, &de, off, sizeof(de)) != (int)sizeof(de))
+      break;
+    if (de.inum == 0)
+      continue;
+    if (kstrcmp(de.name, ".") == 0 || kstrcmp(de.name, "..") == 0)
+      continue;
+    return 0;
+  }
+  return 1;
+}
+
 void stati(struct inode *ip, struct stat *st) {
   st->ino = ip->inum;
   st->type = (uint16_t)ip->type;
+  st->mode = ip->mode;
   st->nlink = (uint16_t)ip->nlink;
   st->size = ip->size;
   st->dev = 0;
@@ -207,6 +258,7 @@ void fs_init(void) {
   root->inum = ROOTINO;
   root->type = T_DIR;
   root->nlink = 2;
+  root->mode = MODE_DIR;
 
   dirlink(root, ".", ROOTINO);
   dirlink(root, "..", ROOTINO);
@@ -270,7 +322,7 @@ void fs_selftest(void) {
   }
 
   vfs_unlink("/selftest");
-  vfs_unlink("/selftest_dir");
+  vfs_rmdir("/selftest_dir");
 
   if (rw_ok && dir_ok) {
     print("[FS] selftest PASS\n", 0x0A);
