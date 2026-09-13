@@ -53,9 +53,10 @@ typedef struct {
   uint32_t sig_blocked;     // blocked signal bitmask
   uint32_t in_signal;       // currently running a handler (no nesting)
   sigcontext_t sig_saved;   // context to restore on sigreturn
+  uint32_t syscall_esp;     // this process's iret frame on its kernel stack
 } process_t;
 
-_Static_assert(sizeof(process_t) == 460, "update PROCESS_SIZE in switch.s");
+_Static_assert(sizeof(process_t) == 464, "update PROCESS_SIZE in switch.s");
 
 /* Signal numbers used by the kernel (match Linux/mlibc). */
 #define SIGKILL 9
@@ -113,5 +114,4 @@ int process_get_count(void);
 extern process_t processes[MAX_PROCESSES];
 extern int process_count;
 extern int current;
-extern uint32_t syscall_kernel_esp;
 #endif

@@ -13,6 +13,14 @@ process_t processes[MAX_PROCESSES];
 int current = 0;
 int process_count = 0;
 
+/* The iret frame of the current process's in-flight syscall, stored per
+ * process by syscall_stub.  It must not be a global: a blocking syscall can
+ * be preempted while another process enters the kernel, which would otherwise
+ * make the blocked process build signal frames on the wrong stack. */
+static uint32_t *current_iret(void) {
+  return (uint32_t *)(uintptr_t)processes[current].syscall_esp;
+}
+
 /*
  * PIDs are monotonic and independent of the slot index.  Reaping a child
  * compacts the process array, so using the index as the pid would silently
@@ -94,7 +102,7 @@ static uint32_t user_build_stack(const char *const *args, int argc,
  * registers live just above the kernel esp captured on syscall entry.
  */
 static void patch_user_frame(uint32_t entry, uint32_t stack) {
-  uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+  uint32_t *iret = current_iret();
   iret[0] = entry; // EIP
   iret[3] = stack; // ESP_user
 
@@ -463,9 +471,6 @@ int process_waitpid(int pid, int flags, int *status) {
   return -EAGAIN;
 }
 
-// set by syscall_stub before calling syscall_handler
-uint32_t syscall_kernel_esp = 0;
-
 int process_fork(uint32_t child_eax_ret) {
   (void)child_eax_ret;
   process_t *parent = &processes[current];
@@ -516,7 +521,7 @@ int process_fork(uint32_t child_eax_ret) {
    * frame at syscall entry.  Point the child at the copy of that frame and
    * zero its eax so fork() returns 0 in the child.
    */
-  uint32_t child_pusha = cktop - (parent->kernel_stack - (syscall_kernel_esp - 32));
+  uint32_t child_pusha = cktop - (parent->kernel_stack - (processes[current].syscall_esp - 32));
   c->ctx.esp = child_pusha;
   *(uint32_t *)(uintptr_t)(child_pusha + 28) = 0; // eax
 
@@ -656,7 +661,7 @@ int process_kill(int pid, int sig) {
  * eax so the syscall stub writes it back (it otherwise clobbers eax). */
 int process_sigreturn(void) {
   process_t *p = &processes[current];
-  uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+  uint32_t *iret = current_iret();
   uint32_t *regs = iret - 8;
 
   iret[0] = p->sig_saved.eip;
@@ -704,7 +709,7 @@ int signal_deliver(void) {
       return 1; /* not reached */
     }
 
-    uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+    uint32_t *iret = current_iret();
     uint32_t *regs = iret - 8;
     p->sig_saved.eip = iret[0];
     p->sig_saved.cs = iret[1];

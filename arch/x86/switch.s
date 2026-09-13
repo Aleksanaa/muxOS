@@ -12,19 +12,19 @@ extern isr14_handler
 extern processes
 extern current
 extern process_count
-extern syscall_kernel_esp
 extern tss_set_kernel_stack
 extern process_set_tls
 extern signal_deliver
 
 ; process_t 各字段在结构体中的偏移（与 process.h 保持同步）
-PROCESS_SIZE      equ 460 ; sizeof(process_t) (guarded by _Static_assert in process.h)
+PROCESS_SIZE      equ 464 ; sizeof(process_t) (guarded by _Static_assert in process.h)
 CTX_ESP_OFF       equ 4   ; offsetof(process_t, ctx.esp)
 STATE_OFF         equ 24  ; offsetof(process_t, state)
 STARTED_OFF       equ 28  ; offsetof(process_t, started)
 KERNEL_STACK_OFF  equ 32  ; offsetof(process_t, kernel_stack)
 SLEEP_TICKS_OFF   equ 36  ; offsetof(process_t, sleep_ticks)
 PDIR_OFF          equ 248 ; offsetof(process_t, pdir)
+SYSCALL_ESP_OFF   equ 460 ; offsetof(process_t, syscall_esp)
 PROC_ZOMBIE       equ 2
 
 ; -----------------------------------------------------------------------
@@ -191,12 +191,18 @@ syscall_stub:
     mov gs, ax
     pop eax
 
-    ; 保存当前内核栈指针供 sys_fork 使用
-    ; 此时 esp 指向 iret 帧（EIP,CS,EFLAGS,ESP_user,SS_user）
-    mov [syscall_kernel_esp], esp
-
     ; 保存所有用户态寄存器（供 fork 复制完整现场）
     pusha
+
+    ; 记录本次系统调用的 iret 帧指针，按进程保存，避免它被其它进程的
+    ; 系统调用覆盖（否则阻塞返回后投递信号会写错栈帧）。
+    ; pusha 之后 iret 帧位于 esp+32。
+    mov ecx, [current]
+    imul ecx, PROCESS_SIZE
+    mov edx, processes
+    add ecx, edx
+    lea eax, [esp + 32]
+    mov [ecx + SYSCALL_ESP_OFF], eax
 
     ; 按 C 调用约定从右到左压参数
     ; syscall_handler(eax, ebx, ecx, edx, esi, edi, ebp)
