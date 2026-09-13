@@ -2,6 +2,7 @@
 #include "../lib/string.h"
 #include "elf.h"
 #include "fs.h"
+#include "gdt.h"
 #include "pmm.h"
 #include "tss.h"
 #include "vga.h"
@@ -10,13 +11,8 @@
 process_t processes[MAX_PROCESSES];
 int current = 0;
 int process_count = 0;
-int shell_pid = -1;
 
 extern void enter_usermode(uint32_t entry, uint32_t stack);
-
-/* The userland ELF is embedded in the kernel image by objcopy. */
-extern const uint8_t _binary_build_user_embedded_elf_start[];
-extern const uint8_t _binary_build_user_embedded_elf_end[];
 
 #define USER_STACK_TOP 0x28000000u
 #define USER_STACK_PAGES 16u
@@ -25,21 +21,35 @@ void context_switch(context_t *old, context_t *new);
 void process_enter(context_t *old, context_t *new);
 void process_jump(context_t *new);
 
+/* Point %gs at the process's TCB.  Called from the asm switch stubs too. */
+void process_set_tls(process_t *p) { gdt_set_tls_base(p->tls_base); }
+
 /*
  * Lay out argc/argv/envp and a minimal auxv at the top of the user stack,
  * newest at the lowest address.  The stack pages must already be mapped.
  */
-static uint32_t user_build_stack(const char *const *args, int argc) {
+static uint32_t user_build_stack(const char *const *args, int argc,
+                                 const char *const *envp, int envc) {
   uint32_t sp = USER_STACK_TOP;
   uint32_t argp[32];
+  uint32_t envpp[32];
 
   if (argc > 32)
     argc = 32;
+  if (envc > 32)
+    envc = 32;
   for (int i = 0; i < argc; i++) {
     uint32_t len = kstrlen(args[i]) + 1;
     sp -= len;
     kmemcpy((void *)(uintptr_t)sp, args[i], len);
     argp[i] = sp;
+    sp &= ~3u;
+  }
+  for (int i = 0; i < envc; i++) {
+    uint32_t len = kstrlen(envp[i]) + 1;
+    sp -= len;
+    kmemcpy((void *)(uintptr_t)sp, envp[i], len);
+    envpp[i] = sp;
     sp &= ~3u;
   }
 
@@ -52,6 +62,10 @@ static uint32_t user_build_stack(const char *const *args, int argc) {
   *(uint32_t *)(uintptr_t)(sp + 4) = 0;
   sp -= 4; // envp terminator
   *(uint32_t *)(uintptr_t)sp = 0;
+  for (int i = envc - 1; i >= 0; i--) {
+    sp -= 4;
+    *(uint32_t *)(uintptr_t)sp = envpp[i];
+  }
   sp -= 4; // argv terminator
   *(uint32_t *)(uintptr_t)sp = 0;
   for (int i = argc - 1; i >= 0; i--) {
@@ -84,6 +98,8 @@ void process_register_current() {
   processes[0].kernel_stack = 0;
   processes[0].state = PROC_RUNNING;
   processes[0].pdir = vmm_kernel_pdir();
+  processes[0].mmap_next = USER_MMAP_BASE;
+  processes[0].tls_base = 0;
   kstrcpy(processes[0].process_name, "bootstrap");
   fd_init(processes[0].fds);
   process_count = 1;
@@ -127,6 +143,7 @@ void process_schedule() {
   int old = current;
   current = next;
 
+  process_set_tls(&processes[next]);
   vmm_switch_pdir(processes[next].pdir);
 
   if (!processes[next].started) {
@@ -159,27 +176,48 @@ void process_create_kernel(void (*entry)()) {
   processes[process_count].kernel_stack = 0;
   processes[process_count].state = PROC_RUNNING;
   processes[process_count].pdir = vmm_kernel_pdir();
+  processes[process_count].mmap_next = USER_MMAP_BASE;
+  processes[process_count].tls_base = 0;
   kstrcpy(processes[process_count].process_name, "kernel_init");
   fd_init(processes[process_count].fds);
   process_count++;
 }
 
+/* Environment handed to the initial shell (and inherited by everything). */
+static const char *init_envp[] = {
+    "PATH=/bin",
+    "HOME=/",
+    "PWD=/",
+    "TERM=muxos",
+    0,
+};
+
+/*
+ * Load the initial user process from an ELF stored in the filesystem (i.e.
+ * /bin/sh) rather than an image embedded in the kernel.
+ */
 void process_create_user(void) {
   extern void print(const char *, unsigned char);
   uint32_t entry = 0;
-  uint32_t elf_size = (uint32_t)(_binary_build_user_embedded_elf_end -
-                                 _binary_build_user_embedded_elf_start);
+
+  struct file *f = vfs_open("/bin/sh", O_RDONLY);
+  if (!f) {
+    print("cannot open /bin/sh\n", 0x0C);
+    return;
+  }
 
   uint32_t pdir = vmm_create_pdir();
   if (!pdir) {
+    fileclose(f);
     print("pdir alloc failed\n", 0x0C);
     return;
   }
-  if (elf_load(pdir, _binary_build_user_embedded_elf_start, elf_size, &entry) <
-      0) {
+  if (elf_load_inode(pdir, f->ip, &entry) < 0) {
+    fileclose(f);
     print("elf load failed\n", 0x0C);
     return;
   }
+  fileclose(f);
 
   uint32_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096u;
   for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
@@ -192,8 +230,8 @@ void process_create_user(void) {
   /* Build the stack through the new address space. */
   uint32_t old_pdir = vmm_current_pdir();
   vmm_switch_pdir(pdir);
-  static const char *init_argv[] = { "muxsh", 0 };
-  uint32_t user_stack = user_build_stack(init_argv, 1);
+  static const char *init_argv[] = { "sh", 0 };
+  uint32_t user_stack = user_build_stack(init_argv, 1, init_envp, 4);
   vmm_switch_pdir(old_pdir);
 
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
@@ -202,7 +240,6 @@ void process_create_user(void) {
     return;
   kernel_stack += 4096;
 
-  shell_pid = process_count;
   processes[process_count].pid = process_count;
   processes[process_count].ctx.esp = entry;
   processes[process_count].ctx.ebp = user_stack;
@@ -216,7 +253,8 @@ void process_create_user(void) {
   processes[process_count].state = PROC_RUNNING;
   processes[process_count].parent_pid = 0;
   processes[process_count].pdir = pdir;
-  processes[process_count].exec_active = 0;
+  processes[process_count].mmap_next = USER_MMAP_BASE;
+  processes[process_count].tls_base = 0;
   fd_init(processes[process_count].fds);
   process_count++;
 }
@@ -300,6 +338,7 @@ void process_exit() {
   if (current == 0 && process_count > 1)
     current = 1;
 
+  process_set_tls(&processes[current]);
   vmm_switch_pdir(processes[current].pdir);
   processes[current].started = 1;
   process_jump(&processes[current].ctx);
@@ -406,6 +445,8 @@ int process_fork(uint32_t child_eax_ret) {
   c->kernel_stack = cktop;
   c->user_code = parent->user_code;
   c->user_stack = parent->user_stack;
+  c->mmap_next = parent->mmap_next;
+  c->tls_base = parent->tls_base;
   c->state = PROC_RUNNING;
   /* ctx.esp already points at a complete pusha/iret frame, so the child is
    * immediately runnable (unlike process_create_user, which needs the stub's
@@ -433,7 +474,30 @@ int process_fork(uint32_t child_eax_ret) {
  * On success the pending syscall return points at the new entry point and
  * this returns 0; on failure it returns a negative errno.
  */
-int process_execve(const char *path, const char *const *uargv) {
+/* Copy a user string vector into kernel buffers before we overwrite user mem. */
+static int snapshot_vec(const char *const *uvec, char *buf, uint32_t bufsz,
+                        const char **kvec, int max) {
+  int n = 0;
+  uint32_t used = 0;
+  if (uvec) {
+    while (n < max && uvec[n] && used < bufsz - 1) {
+      const char *s = uvec[n];
+      uint32_t j = 0;
+      while (s[j] && used + j < bufsz - 1) {
+        buf[used + j] = s[j];
+        j++;
+      }
+      buf[used + j] = 0;
+      kvec[n] = &buf[used];
+      used += j + 1;
+      n++;
+    }
+  }
+  return n;
+}
+
+int process_execve(const char *path, const char *const *uargv,
+                   const char *const *uenvp) {
   struct file *f = vfs_open(path, O_RDONLY);
   if (!f)
     return -fs_errno;
@@ -442,24 +506,12 @@ int process_execve(const char *path, const char *const *uargv) {
     return -EACCES;
   }
 
-  char argbuf[512];
+  static char argbuf[1024];
+  static char envbuf[2048];
   const char *kargv[32];
-  int argc = 0;
-  uint32_t used = 0;
-  if (uargv) {
-    while (argc < 32 && uargv[argc] && used < sizeof(argbuf) - 1) {
-      const char *s = uargv[argc];
-      uint32_t j = 0;
-      while (s[j] && used + j < sizeof(argbuf) - 1) {
-        argbuf[used + j] = s[j];
-        j++;
-      }
-      argbuf[used + j] = 0;
-      kargv[argc] = &argbuf[used];
-      used += j + 1;
-      argc++;
-    }
-  }
+  const char *kenvp[32];
+  int argc = snapshot_vec(uargv, argbuf, sizeof(argbuf), kargv, 32);
+  int envc = snapshot_vec(uenvp, envbuf, sizeof(envbuf), kenvp, 32);
   if (argc == 0) {
     argbuf[0] = 0;
     kargv[0] = argbuf;
@@ -474,24 +526,7 @@ int process_execve(const char *path, const char *const *uargv) {
   fileclose(f);
 
   mmap_reset();
-  uint32_t user_stack = user_build_stack(kargv, argc);
-  patch_user_frame(entry, user_stack);
-  processes[current].user_code = entry;
-  processes[current].user_stack = user_stack;
-  return 0;
-}
-
-/* Reload the embedded shell after a program it exec'd has exited. */
-int process_restore_shell(void) {
-  uint32_t entry;
-  uint32_t size = (uint32_t)(_binary_build_user_embedded_elf_end -
-                             _binary_build_user_embedded_elf_start);
-  if (elf_load(processes[current].pdir, _binary_build_user_embedded_elf_start,
-               size, &entry) < 0)
-    return -1;
-  mmap_reset();
-  static const char *argv[] = { "muxsh", 0 };
-  uint32_t user_stack = user_build_stack(argv, 1);
+  uint32_t user_stack = user_build_stack(kargv, argc, kenvp, envc);
   patch_user_frame(entry, user_stack);
   processes[current].user_code = entry;
   processes[current].user_stack = user_stack;

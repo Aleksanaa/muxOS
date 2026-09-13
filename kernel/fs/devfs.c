@@ -20,15 +20,39 @@ static int console_write(const void *buf, int n) {
   return n;
 }
 
+/*
+ * There is no tty line discipline, so do the minimal canonical-mode job here:
+ * echo keyboard input, handle backspace/delete, and terminate on Enter.
+ * COM1 input is not echoed because the connected terminal already does it.
+ */
 static int console_read(void *buf, int n) {
   asm volatile("sti");
   char *b = (char *)buf;
   int i = 0;
   while (i < n) {
-    char c = console_getchar();
-    b[i++] = c;
-    if (c == '\n' || c == '\r')
+    int from_kb = 0;
+    char c = console_getchar_src(&from_kb);
+    if (c == '\r')
+      c = '\n';
+    if (c == '\n') {
+      if (from_kb)
+        print("\n", 0x07);
+      b[i++] = '\n';
       break;
+    }
+    if (c == '\b' || c == 127) {
+      if (i > 0) {
+        i--;
+        if (from_kb)
+          vga_backspace();
+      }
+      continue;
+    }
+    if (from_kb) {
+      char s[2] = {c, 0};
+      print(s, 0x07);
+    }
+    b[i++] = c;
   }
   return i;
 }

@@ -6,6 +6,9 @@
 #define PROC_RUNNING 1
 #define PROC_ZOMBIE 2 // 已退出但父进程还没 wait
 
+/* Anonymous mmap regions are handed out from here, per process. */
+#define USER_MMAP_BASE 0x30000000u
+
 #ifndef FD_MAX
 #define FD_MAX 16
 #endif
@@ -34,10 +37,11 @@ typedef struct {
   char process_name[128];
   struct file *fds[FD_MAX]; // per-process open file descriptors
   uint32_t pdir;            // physical address of this process's page directory
-  uint32_t exec_active;     // this process is running an exec'd image
+  uint32_t mmap_next;       // next free address for anonymous mmap
+  uint32_t tls_base;        // %gs base (mlibc's TCB), restored on switch
 } process_t;
 
-_Static_assert(sizeof(process_t) == 256, "update PROCESS_SIZE in switch.s");
+_Static_assert(sizeof(process_t) == 260, "update PROCESS_SIZE in switch.s");
 typedef struct {
   uint32_t pid;
   uint32_t parent_pid;
@@ -54,8 +58,9 @@ void start_user_process(int pid, char *process_name);
 void process_sleep(uint32_t ticks);
 void process_exit();
 int process_fork(uint32_t child_eax_ret);
-int process_execve(const char *path, const char *const *uargv);
-int process_restore_shell(void);
+int process_execve(const char *path, const char *const *uargv,
+                   const char *const *uenvp);
+void process_set_tls(process_t *p);
 void mmap_reset(void);
 int process_wait();
 int process_current_pid();
@@ -64,6 +69,5 @@ int process_get_count(void);
 extern process_t processes[MAX_PROCESSES];
 extern int process_count;
 extern int current;
-extern int shell_pid;
 extern uint32_t syscall_kernel_esp;
 #endif

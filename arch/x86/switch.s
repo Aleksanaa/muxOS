@@ -14,9 +14,10 @@ extern current
 extern process_count
 extern syscall_kernel_esp
 extern tss_set_kernel_stack
+extern process_set_tls
 
 ; process_t 各字段在结构体中的偏移（与 process.h 保持同步）
-PROCESS_SIZE      equ 256 ; sizeof(process_t) (guarded by _Static_assert in process.h)
+PROCESS_SIZE      equ 260 ; sizeof(process_t) (guarded by _Static_assert in process.h)
 CTX_ESP_OFF       equ 4   ; offsetof(process_t, ctx.esp)
 STATE_OFF         equ 24  ; offsetof(process_t, state)
 STARTED_OFF       equ 28  ; offsetof(process_t, started)
@@ -131,6 +132,12 @@ irq0_stub:
     pop eax                           ; 恢复 &processes[new]
 
 .kernel_stack_ready:
+    ; 恢复目标进程的 %gs 基址（mlibc TCB）
+    push eax
+    push eax
+    call process_set_tls
+    add esp, 4
+    pop eax
     ; 切换到新进程的地址空间
     mov ecx, [eax + PDIR_OFF]
     mov cr3, ecx
@@ -275,6 +282,11 @@ syscall_stub:
     add esp, 4
     pop eax                           ; 恢复 &processes[new]
 .zombie_tss_ready:
+    push eax
+    push eax
+    call process_set_tls
+    add esp, 4
+    pop eax
     mov ecx, [eax + STARTED_OFF]
     test ecx, ecx
     jnz .zombie_switch_started
@@ -307,6 +319,11 @@ syscall_stub:
     pop eax                           ; 恢复 &processes[new]
 
 .sleep_tss_ready:
+    push eax
+    push eax
+    call process_set_tls
+    add esp, 4
+    pop eax
     mov ecx, [eax + STARTED_OFF]
     test ecx, ecx
     jnz .sleep_already_started

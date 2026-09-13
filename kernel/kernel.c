@@ -60,7 +60,7 @@ void panic(const char *msg) {
 void task_kernel_init() {
   print("kernel task init!\n", 0x0B);
   process_create_user();
-  start_user_process(2, "shell");
+  start_user_process(2, "sh");
   while (1)
     ;
 }

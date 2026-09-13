@@ -34,13 +34,26 @@
         helloLd = ./ports/mlibc/hello.ld;
       };
 
+      mrsh = pkgs.callPackage ./nix/pkgs/mrsh {
+        cross = linuxCross;
+        inherit mlibc;
+        helloLd = ./ports/mlibc/hello.ld;
+      };
+
       muxos = pkgs.callPackage ./nix/pkgs/muxos {
         inherit buildTools;
         src = self;
-        programs = map (t: {
-          name = t;
-          path = "${toybox}/bin/${t}";
-        }) toybox.toys;
+        programs =
+          map (t: {
+            name = t;
+            path = "${toybox}/bin/${t}";
+          }) toybox.toys
+          ++ [
+            {
+              name = "sh";
+              path = "${mrsh}/bin/sh";
+            }
+          ];
       };
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''
@@ -52,7 +65,14 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        packages = buildTools ++ [ pkgs.qemu pkgs.meson pkgs.ninja pkgs.pkg-config ];
+        packages = buildTools ++ [
+          linuxCross.stdenv.cc
+          linuxCross.binutils
+          pkgs.qemu
+          pkgs.meson
+          pkgs.ninja
+          pkgs.pkg-config
+        ];
         shellHook = ''
           export QEMUFLAGS="''${QEMUFLAGS:--display gtk}"
         '';
@@ -63,6 +83,7 @@
         mlibc = mlibc;
         hello = hello;
         toybox = toybox;
+        mrsh = mrsh;
       };
 
       apps.${system} = {

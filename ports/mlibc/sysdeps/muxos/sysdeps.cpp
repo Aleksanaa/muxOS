@@ -20,6 +20,18 @@
 #include <stddef.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/times.h>
+#include <termios.h>
+
+/* Linux i386 ioctl request numbers (mlibc does not ship sys/ioctl.h). */
+#define MUX_TCGETS 0x5401
+#define MUX_TCSETS 0x5402
+#define MUX_TCSETSW 0x5403
+#define MUX_TCSETSF 0x5404
+#define MUX_TIOCGPGRP 0x540F
+#define MUX_TIOCSPGRP 0x5410
+#define MUX_TIOCGWINSZ 0x5413
+#define MUX_TIOCGSID 0x5429
 
 #define KSYS_READ 0
 #define KSYS_WRITE 1
@@ -82,15 +94,78 @@ struct muxos_dirent {
 };
 
 /*
- * toybox uses ioctl() for terminal size and termios; mlibc only defines it
- * under the glibc option, which this port does not build.  Always report
- * ENOTTY so callers fall back to defaults instead of failing to link.
+ * There is no real tty line discipline; present a canonical, echoing terminal
+ * so programs (toybox, mrsh) that query termios/winsize take their normal
+ * interactive paths instead of bailing out.
+ */
+static void fill_termios(struct termios *t) {
+	memset(t, 0, sizeof(*t));
+	t->c_iflag = ICRNL | IXON;
+	t->c_oflag = OPOST | ONLCR;
+	t->c_cflag = CS8 | CREAD | CLOCAL;
+	t->c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK;
+	t->c_cc[VINTR] = 3;    /* ^C */
+	t->c_cc[VQUIT] = 28;   /* ^\ */
+	t->c_cc[VERASE] = 127; /* DEL */
+	t->c_cc[VKILL] = 21;   /* ^U */
+	t->c_cc[VEOF] = 4;     /* ^D */
+	t->c_cc[VSTART] = 17;  /* ^Q */
+	t->c_cc[VSTOP] = 19;   /* ^S */
+	t->c_cc[VSUSP] = 26;   /* ^Z */
+	cfsetispeed(t, B38400);
+	cfsetospeed(t, B38400);
+}
+
+static void fill_winsize(struct winsize *w) {
+	w->ws_row = 24;
+	w->ws_col = 80;
+	w->ws_xpixel = 0;
+	w->ws_ypixel = 0;
+}
+
+static int term_ioctl(unsigned long request, void *arg) {
+	switch (request) {
+	case MUX_TCGETS:
+		fill_termios((struct termios *)arg);
+		return 0;
+	case MUX_TCSETS:
+	case MUX_TCSETSW:
+	case MUX_TCSETSF:
+		return 0;
+	case MUX_TIOCGWINSZ:
+		fill_winsize((struct winsize *)arg);
+		return 0;
+	case MUX_TIOCGPGRP:
+		*(int *)arg = (int)syscall(KSYS_GETPID);
+		return 0;
+	case MUX_TIOCSPGRP:
+		return 0;
+	case MUX_TIOCGSID:
+		*(int *)arg = (int)syscall(KSYS_GETPID);
+		return 0;
+	default:
+		return ENOTTY;
+	}
+}
+
+/*
+ * toybox/other C programs call ioctl() directly; mlibc only defines it under
+ * the glibc option, which this port does not build.  Provide it and back it
+ * with the same fake terminal as Sysdeps<Ioctl>.
  */
 extern "C" int ioctl(int fd, unsigned long request, ...) {
 	(void)fd;
-	(void)request;
-	errno = ENOTTY;
-	return -1;
+	va_list ap;
+	va_start(ap, request);
+	void *arg = va_arg(ap, void *);
+	va_end(ap);
+
+	int e = term_ioctl(request, arg);
+	if (e) {
+		errno = e;
+		return -1;
+	}
+	return 0;
 }
 
 namespace mlibc {
@@ -146,9 +221,66 @@ void Sysdeps<LibcLog>::operator()(const char *message) {
 }
 
 int Sysdeps<Isatty>::operator()(int fd) {
-	(void)fd;
-	/* The console is not a real tty; tell toybox so it skips termios ioctls. */
+	/* fds 0-2 are wired to /dev/console at startup. */
+	if (fd >= 0 && fd <= 2)
+		return 0;
 	return ENOTTY;
+}
+
+int Sysdeps<Kill>::operator()(pid_t pid, int sig) {
+	(void)pid;
+	(void)sig;
+	/* No signal delivery yet; pretend the signal was accepted. */
+	return 0;
+}
+
+int Sysdeps<GetPgid>::operator()(pid_t pid, pid_t *pgid) {
+	(void)pid;
+	*pgid = Sysdeps<GetPid>::operator()();
+	return 0;
+}
+
+int Sysdeps<GetSid>::operator()(pid_t pid, pid_t *sid) {
+	(void)pid;
+	*sid = Sysdeps<GetPid>::operator()();
+	return 0;
+}
+
+int Sysdeps<SetPgid>::operator()(pid_t pid, pid_t pgid) {
+	(void)pid;
+	(void)pgid;
+	return 0;
+}
+
+int Sysdeps<SetSid>::operator()(pid_t *sid) {
+	*sid = Sysdeps<GetPid>::operator()();
+	return 0;
+}
+
+int Sysdeps<Tcgetattr>::operator()(int fd, struct termios *attr) {
+	(void)fd;
+	fill_termios(attr);
+	return 0;
+}
+
+int Sysdeps<Tcsetattr>::operator()(int fd, int actions,
+		const struct termios *attr) {
+	(void)fd;
+	(void)actions;
+	(void)attr;
+	return 0;
+}
+
+int Sysdeps<Tcgetwinsize>::operator()(int fd, struct winsize *winsz) {
+	(void)fd;
+	fill_winsize(winsz);
+	return 0;
+}
+
+int Sysdeps<Times>::operator()(struct tms *tms, clock_t *out) {
+	memset(tms, 0, sizeof(*tms));
+	*out = 0;
+	return 0;
 }
 
 pid_t Sysdeps<GetPid>::operator()() {
@@ -157,6 +289,11 @@ pid_t Sysdeps<GetPid>::operator()() {
 }
 
 pid_t Sysdeps<GetPpid>::operator()() { return 0; }
+
+uid_t Sysdeps<GetUid>::operator()() { return 0; }
+uid_t Sysdeps<GetEuid>::operator()() { return 0; }
+gid_t Sysdeps<GetGid>::operator()() { return 0; }
+gid_t Sysdeps<GetEgid>::operator()() { return 0; }
 
 int Sysdeps<Fork>::operator()(pid_t *child) {
 	long r = syscall(KSYS_FORK);
@@ -211,10 +348,9 @@ int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *set,
 int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg,
 		int *result) {
 	(void)fd;
-	(void)request;
-	(void)arg;
-	(void)result;
-	return ENOTTY;
+	if (result)
+		*result = 0;
+	return term_ioctl(request, arg);
 }
 
 int Sysdeps<GetCwd>::operator()(char *buffer, size_t size) {

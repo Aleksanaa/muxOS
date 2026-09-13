@@ -40,14 +40,16 @@ static struct inode *path_base(int dirfd, int *err) {
   return f->ip;
 }
 
-/* Anonymous mmap region: a simple bump allocator over the user address space. */
-#define USER_MMAP_BASE 0x30000000u
-static uint32_t mmap_next = USER_MMAP_BASE;
-
+/*
+ * Anonymous mmap region: a simple per-process bump allocator over the user
+ * address space.  It has to be per-process so that a fork+exec in a child
+ * does not rewind the parent's allocator (and hand out live addresses twice).
+ */
 void mmap_reset(void) {
-  for (uint32_t va = USER_MMAP_BASE; va < mmap_next; va += 0x1000)
+  uint32_t end = processes[current].mmap_next;
+  for (uint32_t va = USER_MMAP_BASE; va < end; va += 0x1000)
     vmm_free(processes[current].pdir, va);
-  mmap_next = USER_MMAP_BASE;
+  processes[current].mmap_next = USER_MMAP_BASE;
 }
 
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
@@ -70,12 +72,6 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
   }
 
   case SYS_EXIT:
-    if (processes[current].pid == (uint32_t)shell_pid &&
-        processes[current].exec_active) {
-      processes[current].exec_active = 0;
-      if (process_restore_shell() == 0)
-        break; // iret back into the shell
-    }
     process_exit();
     break;
 
@@ -88,11 +84,8 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     break;
 
   case SYS_EXECVE: {
-    int r = process_execve((const char *)ebx, (const char *const *)ecx);
-    if (r < 0)
-      return r;
-    processes[current].exec_active = 1;
-    return 0;
+    return process_execve((const char *)ebx, (const char *const *)ecx,
+                          (const char *const *)edx);
   }
 
   case SYS_WAIT:
@@ -370,14 +363,14 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     if (len == 0)
       return -1;
     uint32_t pages = (len + 0xFFFu) / 0x1000u;
-    uint32_t base = mmap_next;
+    uint32_t base = processes[current].mmap_next;
     for (uint32_t i = 0; i < pages; i++) {
       uint32_t va = base + i * 0x1000u;
       if (!vmm_alloc_at(processes[current].pdir, va))
         return -1;
       kmemset((void *)(uintptr_t)va, 0, 0x1000);
     }
-    mmap_next = base + pages * 0x1000u;
+    processes[current].mmap_next = base + pages * 0x1000u;
     return (int)base;
   }
 
@@ -386,6 +379,7 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     return 0;
 
   case SYS_SET_TLS:
+    processes[current].tls_base = ebx;
     gdt_set_tls_base(ebx);
     return 0;
 

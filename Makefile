@@ -12,34 +12,20 @@ ISO_DIR := $(BUILD)/isodir
 
 CPPFLAGS := -I. -Iarch/x86 -Iarch/x86/include \
             -Ikernel -Ikernel/lib -Ikernel/mm -Ikernel/task -Ikernel/fs \
-            -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video \
-            -Iuser/bin -Iuser/lib
+            -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video
 CFLAGS   := -m32 -ffreestanding -fno-builtin -fno-pic -O0 -g \
             -Wall -Wextra -MMD -MP
 LDFLAGS  := -m32 -T linker.ld -ffreestanding -nostdlib
-LDFLAGS_USER := -m32 -T user/user.ld -ffreestanding -nostdlib
 QEMUFLAGS ?= -display cocoa,zoom-to-fit=on
 
-# userlib.c includes user/bin/shell.c directly, so shell.c must not be
-# compiled separately.  The userland is linked into its own ELF, then embedded
-# in the kernel image as a binary blob and loaded at boot by kernel/elf.c.
+# The initial user process (and every other program) is a static ELF linked
+# against mlibc, built outside the kernel tree.  Each is embedded in the kernel
+# image with .incbin, copied into /bin at boot, and loaded from the filesystem.
 KERNEL_C_SRCS   := $(shell find arch kernel drivers -type f -name '*.c' | sort)
 KERNEL_ASM_SRCS := $(shell find arch -type f -name '*.s' | sort)
-USER_C_SRCS     := user/lib/userlib.c
-USER_ASM_SRCS   := user/crt/user_crt.s
 
 KERNEL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_C_SRCS)) \
                $(patsubst %.s,$(BUILD)/%.o,$(KERNEL_ASM_SRCS))
-USER_OBJS   := $(patsubst %.c,$(BUILD)/%.o,$(USER_C_SRCS)) \
-               $(patsubst %.s,$(BUILD)/%.o,$(USER_ASM_SRCS))
-
-# USER_ELF can be overridden to embed a prebuilt ELF (e.g. one linked against
-# mlibc).  It is always copied to a fixed path so the objcopy symbol name is
-# stable regardless of where the ELF came from.
-USER_ELF   ?= $(BUILD)/user.elf
-USER_EMBED := $(BUILD)/user_embedded.elf
-USER_BLOB  := $(BUILD)/user_elf.o
-KERNEL_OBJS += $(USER_BLOB)
 
 # Programs copied into /bin at boot: a space separated list of name=path
 # pairs.  Each is embedded in the kernel image with .incbin and exposed via
@@ -48,7 +34,7 @@ PROGRAMS     ?=
 GEN_PROGRAMS := $(BUILD)/programs.S
 KERNEL_OBJS  += $(BUILD)/programs.o
 
-DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
+DEPS := $(KERNEL_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 .PHONY: all run clean print-sources
@@ -92,24 +78,6 @@ $(BUILD)/programs.o: $(GEN_PROGRAMS)
 .PHONY: FORCE
 FORCE:
 
-ifeq ($(USER_ELF),$(BUILD)/user.elf)
-$(BUILD)/user.elf: $(USER_OBJS) user/user.ld
-	@mkdir -p $(@D)
-	$(CC) $(LDFLAGS_USER) -o $@ $(USER_OBJS) -lgcc
-endif
-
-$(USER_EMBED): $(USER_ELF)
-	@mkdir -p $(@D)
-	cp $< $@
-
-# Embed the userland ELF into the kernel image; symbols become
-# _binary_build_user_embedded_elf_start/_end and are identity-mapped.
-$(USER_BLOB): $(USER_EMBED)
-	@mkdir -p $(@D)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 \
-	  --rename-section .data=.rodata,alloc,load,readonly,data,contents \
-	  $< $@
-
 $(KERNEL): $(KERNEL_OBJS) linker.ld
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(KERNEL_OBJS) -lgcc
@@ -133,6 +101,6 @@ clean:
 	rm -rf $(BUILD)
 
 print-sources:
-	@printf '%s\n' $(KERNEL_C_SRCS) $(KERNEL_ASM_SRCS) $(USER_C_SRCS) $(USER_ASM_SRCS)
+	@printf '%s\n' $(KERNEL_C_SRCS) $(KERNEL_ASM_SRCS)
 
 -include $(DEPS)
