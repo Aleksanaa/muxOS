@@ -54,6 +54,17 @@
 #define SYS_MKDIRAT 44
 #define SYS_RENAMEAT 45
 #define SYS_LINKAT 46
+#define SYS_PIPE 47
+#define SYS_KILL 48
+#define SYS_SIGACTION 49
+#define SYS_SIGPROCMASK 50
+#define SYS_SIGRETURN 51
+#define SYS_SETPGID 52
+#define SYS_GETPGID 53
+#define SYS_GETSID 54
+#define SYS_SETSID 55
+#define SYS_TCGETPGRP 56
+#define SYS_TCSETPGRP 57
 void syscall_init();
 int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
                     uint32_t esi, uint32_t edi, uint32_t ebp);

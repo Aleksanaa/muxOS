@@ -15,9 +15,10 @@ extern process_count
 extern syscall_kernel_esp
 extern tss_set_kernel_stack
 extern process_set_tls
+extern signal_deliver
 
 ; process_t 各字段在结构体中的偏移（与 process.h 保持同步）
-PROCESS_SIZE      equ 260 ; sizeof(process_t) (guarded by _Static_assert in process.h)
+PROCESS_SIZE      equ 460 ; sizeof(process_t) (guarded by _Static_assert in process.h)
 CTX_ESP_OFF       equ 4   ; offsetof(process_t, ctx.esp)
 STATE_OFF         equ 24  ; offsetof(process_t, state)
 STARTED_OFF       equ 28  ; offsetof(process_t, started)
@@ -220,6 +221,11 @@ syscall_stub:
     ; patch eax return value back into pusha frame (7 args = 28 bytes above)
     mov [esp + 56], eax
     add esp, 28           ; 清除压入的 7 个参数
+
+    ; 返回用户态前投递挂起的信号（可能改写 iret 帧进入 handler）
+    call signal_deliver
+    test eax, eax
+    jnz .no_sleep
 
     ; 检查当前进程是否是 ZOMBIE（SYS_EXIT 设置）或 sleep_ticks > 0
     mov ecx, [current]

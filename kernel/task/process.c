@@ -4,6 +4,7 @@
 #include "fs.h"
 #include "gdt.h"
 #include "pmm.h"
+#include "syscall.h"
 #include "tss.h"
 #include "vga.h"
 #include "vmm.h"
@@ -11,6 +12,16 @@
 process_t processes[MAX_PROCESSES];
 int current = 0;
 int process_count = 0;
+
+/*
+ * PIDs are monotonic and independent of the slot index.  Reaping a child
+ * compacts the process array, so using the index as the pid would silently
+ * renumber live processes; a shell waiting on a recorded pid would then wait
+ * on the wrong process (or get ECHILD).
+ */
+static uint32_t next_pid = 1;
+
+static uint32_t alloc_pid(void) { return next_pid++; }
 
 extern void enter_usermode(uint32_t entry, uint32_t stack);
 
@@ -166,7 +177,8 @@ void process_create_kernel(void (*entry)()) {
 
   stack_top -= 32;
 
-  processes[process_count].pid = process_count;
+  kmemset(&processes[process_count], 0, sizeof(process_t));
+  processes[process_count].pid = alloc_pid();
   processes[process_count].ctx.esp = stack_top;
   processes[process_count].ctx.ebp = 0;
   processes[process_count].ctx.ebx = 0;
@@ -196,34 +208,35 @@ static const char *init_envp[] = {
  * Load the initial user process from an ELF stored in the filesystem (i.e.
  * /bin/sh) rather than an image embedded in the kernel.
  */
-void process_create_user(void) {
+int process_create_user(void) {
   extern void print(const char *, unsigned char);
   uint32_t entry = 0;
 
   struct file *f = vfs_open("/bin/sh", O_RDONLY);
   if (!f) {
     print("cannot open /bin/sh\n", 0x0C);
-    return;
+    return -1;
   }
 
   uint32_t pdir = vmm_create_pdir();
   if (!pdir) {
     fileclose(f);
     print("pdir alloc failed\n", 0x0C);
-    return;
+    return -1;
   }
   if (elf_load_inode(pdir, f->ip, &entry) < 0) {
     fileclose(f);
     print("elf load failed\n", 0x0C);
-    return;
+    return -1;
   }
   fileclose(f);
+  process_map_sigtramp(pdir);
 
   uint32_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096u;
   for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
     if (!vmm_alloc_at(pdir, stack_base + i * 4096)) {
       print("user stack map failed\n", 0x0C);
-      return;
+      return -1;
     }
   }
 
@@ -237,10 +250,15 @@ void process_create_user(void) {
   /* 内核栈必须在内核区（无 PAGE_USER），不能用 vmm_alloc */
   uint32_t kernel_stack = pmm_alloc();
   if (!kernel_stack)
-    return;
+    return -1;
   kernel_stack += 4096;
 
-  processes[process_count].pid = process_count;
+  kmemset(&processes[process_count], 0, sizeof(process_t));
+  uint32_t pid = alloc_pid();
+  processes[process_count].pid = pid;
+  processes[process_count].pgid = pid;
+  processes[process_count].sid = pid;
+  foreground_pgid = (int)pid;
   processes[process_count].ctx.esp = entry;
   processes[process_count].ctx.ebp = user_stack;
   processes[process_count].ctx.ebx = 0;
@@ -257,6 +275,7 @@ void process_create_user(void) {
   processes[process_count].tls_base = 0;
   fd_init(processes[process_count].fds);
   process_count++;
+  return (int)pid;
 }
 
 void start_user_process(int pid, char *process_name) {
@@ -382,31 +401,66 @@ int process_tick() {
 
 void process_sleep(uint32_t ticks) { processes[current].sleep_ticks = ticks; }
 
+/* Free a zombie's resources and remove it from the process table. */
+static int reap_child(int i) {
+  int pid = processes[i].pid;
+  uint32_t cpdir = processes[i].pdir;
+  if (processes[i].kernel_stack)
+    pmm_free(processes[i].kernel_stack - 4096);
+  if (cpdir && cpdir != vmm_kernel_pdir())
+    vmm_destroy_pdir(cpdir);
+  for (int j = i; j < process_count - 1; j++)
+    processes[j] = processes[j + 1];
+  process_count--;
+  if (current > i)
+    current--;
+  if (current >= process_count)
+    current = 0;
+  return pid;
+}
+
 // Reap a zombie child. Returns child pid, or -1 if no zombie child exists.
 // If no zombie but has children, sleeps briefly so scheduler can run children.
 int process_wait() {
   uint32_t my_pid = processes[current].pid;
   for (int i = 0; i < process_count; i++) {
     if (processes[i].parent_pid == my_pid &&
-        processes[i].state == PROC_ZOMBIE) {
-      int pid = processes[i].pid;
-      uint32_t cpdir = processes[i].pdir;
-      if (processes[i].kernel_stack)
-        pmm_free(processes[i].kernel_stack - 4096);
-      if (cpdir && cpdir != vmm_kernel_pdir())
-        vmm_destroy_pdir(cpdir);
-      // remove from array
-      for (int j = i; j < process_count - 1; j++)
-        processes[j] = processes[j + 1];
-      process_count--;
-      if (current > i)
-        current--;
-      return pid;
-    }
+        processes[i].state == PROC_ZOMBIE)
+      return reap_child(i);
   }
-  // no zombie yet — sleep so scheduler can run children
   processes[current].sleep_ticks = 10;
   return -1;
+}
+
+/*
+ * POSIX-ish waitpid.  `pid` may be a specific child (the common case for a
+ * shell) or <= 0 for "any child".  Returns the reaped pid, 0 if WNOHANG and
+ * nothing is ready, -ECHILD if there are no matching children, or -EAGAIN so
+ * the caller can yield and retry.  WUNTRACED/WCONTINUED are not implemented.
+ */
+#define WNOHANG_K 1
+int process_waitpid(int pid, int flags, int *status) {
+  uint32_t my_pid = processes[current].pid;
+  int have_child = 0;
+
+  for (int i = 0; i < process_count; i++) {
+    if (processes[i].parent_pid != my_pid)
+      continue;
+    if (pid > 0 && (int)processes[i].pid != pid)
+      continue;
+    if (processes[i].state == PROC_ZOMBIE) {
+      if (status)
+        *status = (int)((processes[i].exit_code & 0xFF) << 8); /* WIFEXITED */
+      return reap_child(i);
+    }
+    have_child = 1;
+  }
+
+  if (!have_child)
+    return -ECHILD;
+  if (flags & WNOHANG_K)
+    return 0;
+  return -EAGAIN;
 }
 
 // set by syscall_stub before calling syscall_handler
@@ -439,7 +493,7 @@ int process_fork(uint32_t child_eax_ret) {
   int child = process_count;
   process_t *c = &processes[child];
   kmemset(c, 0, sizeof(*c));
-  c->pid = (uint32_t)child;
+  c->pid = alloc_pid();
   c->parent_pid = parent->pid;
   c->pdir = cpdir;
   c->kernel_stack = cktop;
@@ -447,6 +501,8 @@ int process_fork(uint32_t child_eax_ret) {
   c->user_stack = parent->user_stack;
   c->mmap_next = parent->mmap_next;
   c->tls_base = parent->tls_base;
+  c->pgid = parent->pgid;
+  c->sid = parent->sid;
   c->state = PROC_RUNNING;
   /* ctx.esp already points at a complete pusha/iret frame, so the child is
    * immediately runnable (unlike process_create_user, which needs the stub's
@@ -465,7 +521,7 @@ int process_fork(uint32_t child_eax_ret) {
   *(uint32_t *)(uintptr_t)(child_pusha + 28) = 0; // eax
 
   process_count++;
-  return child;
+  return (int)c->pid;
 }
 
 /*
@@ -525,6 +581,7 @@ int process_execve(const char *path, const char *const *uargv,
   }
   fileclose(f);
 
+  process_map_sigtramp(processes[current].pdir);
   mmap_reset();
   uint32_t user_stack = user_build_stack(kargv, argc, kenvp, envc);
   patch_user_frame(entry, user_stack);
@@ -533,7 +590,183 @@ int process_execve(const char *path, const char *const *uargv,
   return 0;
 }
 
-int process_current_pid() { return current; }
+/* --- signals, process groups and sessions ------------------------------ */
+
+/* Where the SIGRETURN trampoline is mapped in every user address space. */
+#define SIGRETURN_TRAMPOLINE 0x40000000u
+
+int foreground_pgid = 0;
+
+/* Map a tiny "mov eax, SYS_SIGRETURN; int 0x80" stub so a handler can return. */
+void process_map_sigtramp(uint32_t pdir) {
+  if (vmm_page_present(pdir, SIGRETURN_TRAMPOLINE))
+    return;
+  if (!vmm_alloc_at(pdir, SIGRETURN_TRAMPOLINE))
+    return;
+  uint8_t code[7] = {0xB8, (uint8_t)(SYS_SIGRETURN & 0xFF), 0, 0, 0, 0xCD, 0x80};
+  uint32_t phys = vmm_phys(pdir, SIGRETURN_TRAMPOLINE);
+  if (phys)
+    kmemcpy((void *)(uintptr_t)phys, code, sizeof(code));
+}
+
+int process_sigaction(int sig, const void *act, void *old) {
+  if (sig <= 0 || sig >= 64)
+    return -EINVAL;
+  process_t *p = &processes[current];
+  /* Signals >= 32 (e.g. mlibc's SIGCANCEL) are accepted but not delivered. */
+  if (sig < 32) {
+    if (old)
+      *(uint32_t *)old = p->sig_handler[sig];
+    if (act)
+      p->sig_handler[sig] = *(const uint32_t *)act;
+  } else if (old) {
+    *(uint32_t *)old = 0;
+  }
+  return 0;
+}
+
+int process_kill(int pid, int sig) {
+  if (sig <= 0 || sig >= 64)
+    return -EINVAL;
+  if (sig >= 32)
+    return 0; /* ignored */
+  process_t *me = &processes[current];
+  int sent = 0;
+
+  for (int i = 0; i < process_count; i++) {
+    process_t *t = &processes[i];
+    if (t->pid == 0)
+      continue;
+    int match;
+    if (pid > 0)
+      match = ((int)t->pid == pid);
+    else if (pid == 0)
+      match = (t->pgid == me->pgid);
+    else
+      match = (t->pgid == (uint32_t)(-pid));
+    if (match) {
+      t->sig_pending |= (1u << sig);
+      sent = 1;
+    }
+  }
+  return sent ? 0 : -ESRCH;
+}
+
+/* Restore the context saved when a handler was entered.  Returns the saved
+ * eax so the syscall stub writes it back (it otherwise clobbers eax). */
+int process_sigreturn(void) {
+  process_t *p = &processes[current];
+  uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+  uint32_t *regs = iret - 8;
+
+  iret[0] = p->sig_saved.eip;
+  iret[1] = p->sig_saved.cs;
+  iret[2] = p->sig_saved.eflags;
+  iret[3] = p->sig_saved.esp;
+  iret[4] = p->sig_saved.ss;
+  for (int i = 0; i < 8; i++)
+    regs[i] = p->sig_saved.regs[i];
+  p->in_signal = 0;
+  return (int)p->sig_saved.regs[7];
+}
+
+/*
+ * Deliver one pending signal to the current process, just before it returns to
+ * user mode.  Returns 1 if a handler was entered (the iret frame now points at
+ * it), 0 otherwise.  Default actions may terminate the process (no return).
+ */
+int signal_deliver(void) {
+  process_t *p = &processes[current];
+  if (p->in_signal)
+    return 0;
+
+  uint32_t pend = p->sig_pending & ~p->sig_blocked;
+  if (!pend)
+    return 0;
+
+  for (int sig = 1; sig < 32; sig++) {
+    if (!(pend & (1u << sig)))
+      continue;
+    p->sig_pending &= ~(1u << sig);
+
+    uint32_t h = p->sig_handler[sig];
+    if (h == 1) /* SIG_IGN */
+      continue;
+
+    if (h == 0) {
+      /* SIG_DFL */
+      if (sig == SIGCHLD || sig == SIGCONT || sig == SIGURG ||
+          sig == SIGWINCH || sig == SIGTSTP || sig == SIGTTIN ||
+          sig == SIGTTOU || sig == SIGSTOP)
+        continue; /* ignored / stop unsupported */
+      p->exit_code = 128 + (uint32_t)sig;
+      process_exit();
+      return 1; /* not reached */
+    }
+
+    uint32_t *iret = (uint32_t *)(uintptr_t)syscall_kernel_esp;
+    uint32_t *regs = iret - 8;
+    p->sig_saved.eip = iret[0];
+    p->sig_saved.cs = iret[1];
+    p->sig_saved.eflags = iret[2];
+    p->sig_saved.esp = iret[3];
+    p->sig_saved.ss = iret[4];
+    for (int r = 0; r < 8; r++)
+      p->sig_saved.regs[r] = regs[r];
+
+    /* handler(sig): push the return address and the argument. */
+    uint32_t usp = iret[3] - 8;
+    *(uint32_t *)(uintptr_t)(usp + 4) = (uint32_t)sig;
+    *(uint32_t *)(uintptr_t)usp = SIGRETURN_TRAMPOLINE;
+    iret[0] = h;   /* EIP */
+    iret[3] = usp; /* ESP_user */
+    p->in_signal = 1;
+    return 1;
+  }
+  return 0;
+}
+
+int process_setpgid(int pid, int pgid) {
+  if (pid == 0)
+    pid = (int)processes[current].pid;
+  if (pgid == 0)
+    pgid = pid;
+  for (int i = 0; i < process_count; i++) {
+    if ((int)processes[i].pid == pid) {
+      processes[i].pgid = (uint32_t)pgid;
+      return 0;
+    }
+  }
+  return -ESRCH;
+}
+
+int process_getpgid(int pid) {
+  if (pid == 0)
+    pid = (int)processes[current].pid;
+  for (int i = 0; i < process_count; i++)
+    if ((int)processes[i].pid == pid)
+      return (int)processes[i].pgid;
+  return -ESRCH;
+}
+
+int process_getsid(int pid) {
+  if (pid == 0)
+    pid = (int)processes[current].pid;
+  for (int i = 0; i < process_count; i++)
+    if ((int)processes[i].pid == pid)
+      return (int)processes[i].sid;
+  return -ESRCH;
+}
+
+int process_setsid(void) {
+  process_t *p = &processes[current];
+  p->sid = p->pid;
+  p->pgid = p->pid;
+  foreground_pgid = (int)p->pid;
+  return (int)p->pid;
+}
+
+int process_current_pid() { return (int)processes[current].pid; }
 int process_get_info(uint32_t pid, process_info_t *info) {
   for (int i = 0; i < process_count; i++) {
     if (processes[i].pid == pid) {

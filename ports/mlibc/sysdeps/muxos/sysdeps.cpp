@@ -40,6 +40,7 @@
 #define KSYS_FORK 4
 #define KSYS_EXECVE 5
 #define KSYS_WAIT 6
+#define KSYS_WAITPID 10
 #define KSYS_OPEN 8
 #define KSYS_CLOSE 9
 #define KSYS_LINK 12
@@ -68,6 +69,17 @@
 #define KSYS_MKDIRAT 44
 #define KSYS_RENAMEAT 45
 #define KSYS_LINKAT 46
+#define KSYS_PIPE 47
+#define KSYS_KILL 48
+#define KSYS_SIGACTION 49
+#define KSYS_SIGPROCMASK 50
+#define KSYS_SIGRETURN 51
+#define KSYS_SETPGID 52
+#define KSYS_GETPGID 53
+#define KSYS_GETSID 54
+#define KSYS_SETSID 55
+#define KSYS_TCGETPGRP 56
+#define KSYS_TCSETPGRP 57
 
 #define MUX_DIRSIZ 32
 
@@ -136,12 +148,13 @@ static int term_ioctl(unsigned long request, void *arg) {
 		fill_winsize((struct winsize *)arg);
 		return 0;
 	case MUX_TIOCGPGRP:
-		*(int *)arg = (int)syscall(KSYS_GETPID);
+		*(int *)arg = (int)syscall(KSYS_TCGETPGRP);
 		return 0;
 	case MUX_TIOCSPGRP:
+		syscall(KSYS_TCSETPGRP, *(int *)arg);
 		return 0;
 	case MUX_TIOCGSID:
-		*(int *)arg = (int)syscall(KSYS_GETPID);
+		*(int *)arg = (int)syscall(KSYS_GETSID, 0);
 		return 0;
 	default:
 		return ENOTTY;
@@ -228,32 +241,36 @@ int Sysdeps<Isatty>::operator()(int fd) {
 }
 
 int Sysdeps<Kill>::operator()(pid_t pid, int sig) {
-	(void)pid;
-	(void)sig;
-	/* No signal delivery yet; pretend the signal was accepted. */
-	return 0;
+	long r = syscall(KSYS_KILL, pid, sig);
+	return r < 0 ? (int)-r : 0;
 }
 
 int Sysdeps<GetPgid>::operator()(pid_t pid, pid_t *pgid) {
-	(void)pid;
-	*pgid = Sysdeps<GetPid>::operator()();
+	long r = syscall(KSYS_GETPGID, pid);
+	if (r < 0)
+		return (int)-r;
+	*pgid = (pid_t)r;
 	return 0;
 }
 
 int Sysdeps<GetSid>::operator()(pid_t pid, pid_t *sid) {
-	(void)pid;
-	*sid = Sysdeps<GetPid>::operator()();
+	long r = syscall(KSYS_GETSID, pid);
+	if (r < 0)
+		return (int)-r;
+	*sid = (pid_t)r;
 	return 0;
 }
 
 int Sysdeps<SetPgid>::operator()(pid_t pid, pid_t pgid) {
-	(void)pid;
-	(void)pgid;
-	return 0;
+	long r = syscall(KSYS_SETPGID, pid, pgid);
+	return r < 0 ? (int)-r : 0;
 }
 
 int Sysdeps<SetSid>::operator()(pid_t *sid) {
-	*sid = Sysdeps<GetPid>::operator()();
+	long r = syscall(KSYS_SETSID);
+	if (r < 0)
+		return (int)-r;
+	*sid = (pid_t)r;
 	return 0;
 }
 
@@ -305,19 +322,18 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
 
 int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags,
 		struct rusage *ru, pid_t *ret_pid) {
-	(void)pid;
-	(void)flags;
 	(void)ru;
-	/* The kernel waits for any child; retry (yielding) until one is reaped. */
 	for (;;) {
-		long r = syscall(KSYS_WAIT);
-		if (r >= 0) {
-			if (status)
-				*status = 0;
-			*ret_pid = (pid_t)r;
-			return 0;
+		long r = syscall(KSYS_WAITPID, pid, flags, status);
+		if (r == -EAGAIN) {
+			/* No child ready yet: yield so it can run. */
+			syscall(KSYS_SLEEP, 1);
+			continue;
 		}
-		syscall(KSYS_SLEEP, 1);
+		if (r < 0)
+			return (int)-r;
+		*ret_pid = (pid_t)r;
+		return 0;
 	}
 }
 
@@ -329,20 +345,14 @@ int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
 
 int Sysdeps<Sigaction>::operator()(int sig, const struct sigaction *act,
 		struct sigaction *old) {
-	(void)sig;
-	(void)act;
-	if (old)
-		memset(old, 0, sizeof(*old));
-	return 0;
+	long r = syscall(KSYS_SIGACTION, sig, act, old);
+	return r < 0 ? (int)-r : 0;
 }
 
 int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *set,
 		sigset_t *old) {
-	(void)how;
-	(void)set;
-	if (old)
-		memset(old, 0, sizeof(*old));
-	return 0;
+	long r = syscall(KSYS_SIGPROCMASK, how, set, old);
+	return r < 0 ? (int)-r : 0;
 }
 
 int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg,
@@ -416,20 +426,41 @@ int Sysdeps<Faccessat>::operator()(int dirfd, const char *pathname, int mode,
 
 int Sysdeps<Write>::operator()(int fd, const void *buf, size_t count,
 		ssize_t *bytes_written) {
-	long r = syscall(KSYS_WRITE, fd, buf, count);
+	for (;;) {
+		long r = syscall(KSYS_WRITE, fd, buf, count);
+		if (r == -EAGAIN) {
+			/* Pipe is full: yield and retry. */
+			syscall(KSYS_SLEEP, 1);
+			continue;
+		}
+		if (r < 0)
+			return (int)-r;
+		*bytes_written = r;
+		return 0;
+	}
+}
+
+int Sysdeps<Pipe>::operator()(int *fds, int flags) {
+	long r = syscall(KSYS_PIPE, fds, flags);
 	if (r < 0)
 		return (int)-r;
-	*bytes_written = r;
 	return 0;
 }
 
 int Sysdeps<Read>::operator()(int fd, void *buf, size_t count,
 		ssize_t *bytes_read) {
-	long r = syscall(KSYS_READ, fd, buf, count);
-	if (r < 0)
-		return EIO;
-	*bytes_read = r;
-	return 0;
+	for (;;) {
+		long r = syscall(KSYS_READ, fd, buf, count);
+		if (r == -EAGAIN) {
+			/* Pipe would block: yield and retry. */
+			syscall(KSYS_SLEEP, 1);
+			continue;
+		}
+		if (r < 0)
+			return (int)-r;
+		*bytes_read = r;
+		return 0;
+	}
 }
 
 int Sysdeps<Open>::operator()(const char *pathname, int flags, mode_t mode,

@@ -7,6 +7,7 @@
 
 #include "console.h"
 #include "fs.h"
+#include "process.h"
 #include "vga.h"
 
 struct devsw devsw[NDEV];
@@ -34,6 +35,20 @@ static int console_read(void *buf, int n) {
     char c = console_getchar_src(&from_kb);
     if (c == '\r')
       c = '\n';
+    if (c == '\x03') { /* ^C: interrupt the foreground group */
+      int fg = foreground_pgid;
+      process_kill(fg ? -fg : (int)processes[current].pid, SIGINT);
+      if (processes[current].sig_handler[SIGINT] == 1)
+        continue; /* the reader ignores SIGINT (e.g. the shell) */
+      if (from_kb)
+        print("^C\n", 0x07);
+      return -EINTR;
+    }
+    if (c == 0x04) { /* ^D: EOF on an empty line */
+      if (i == 0)
+        return 0;
+      continue;
+    }
     if (c == '\n') {
       if (from_kb)
         print("\n", 0x07);

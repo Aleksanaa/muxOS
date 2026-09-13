@@ -72,6 +72,7 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
   }
 
   case SYS_EXIT:
+    processes[current].exit_code = ebx;
     process_exit();
     break;
 
@@ -90,6 +91,43 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
 
   case SYS_WAIT:
     return process_wait();
+
+  case SYS_WAITPID:
+    return process_waitpid((int)ebx, (int)ecx, (int *)edx);
+
+  case SYS_KILL:
+    return process_kill((int)ebx, (int)ecx);
+
+  case SYS_SIGACTION:
+    return process_sigaction((int)ebx, (const void *)ecx, (void *)edx);
+
+  case SYS_SIGPROCMASK:
+    /* Signal masks are accepted but not enforced. */
+    if (edx)
+      *(uint32_t *)edx = 0;
+    return 0;
+
+  case SYS_SIGRETURN:
+    return process_sigreturn();
+
+  case SYS_SETPGID:
+    return process_setpgid((int)ebx, (int)ecx);
+
+  case SYS_GETPGID:
+    return process_getpgid((int)ebx);
+
+  case SYS_GETSID:
+    return process_getsid((int)ebx);
+
+  case SYS_SETSID:
+    return process_setsid();
+
+  case SYS_TCGETPGRP:
+    return foreground_pgid;
+
+  case SYS_TCSETPGRP:
+    foreground_pgid = (int)ebx;
+    return 0;
 
   case SYS_RESTART_SYSCALL:
     machine_restart();
@@ -355,6 +393,30 @@ int syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx,
     if (!f)
       return -1;
     return fdalloc(cur_fds(), filedup(f));
+  }
+
+  case SYS_PIPE: {
+    struct file *rf, *wf;
+    int e = vfs_pipe(&rf, &wf);
+    if (e < 0)
+      return e;
+    int fd0 = fdalloc(cur_fds(), rf);
+    int fd1 = fdalloc(cur_fds(), wf);
+    if (fd0 < 0 || fd1 < 0) {
+      if (fd0 >= 0)
+        fdclose(cur_fds(), fd0);
+      else
+        fileclose(rf);
+      if (fd1 >= 0)
+        fdclose(cur_fds(), fd1);
+      else
+        fileclose(wf);
+      return -EMFILE;
+    }
+    int *ufds = (int *)ebx;
+    ufds[0] = fd0;
+    ufds[1] = fd1;
+    return 0;
   }
 
   case SYS_MMAP: {

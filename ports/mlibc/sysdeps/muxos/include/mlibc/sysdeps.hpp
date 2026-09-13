@@ -73,7 +73,8 @@ struct MuxosSysdepTags :
 	Sync,
 	Dup,
 	Dup2,
-	Fcntl
+	Fcntl,
+	Pipe
 {};
 
 template<typename Tag>

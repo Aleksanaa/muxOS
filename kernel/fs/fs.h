@@ -43,13 +43,29 @@ struct inode {
   uint32_t addrs[NDIRECT];
 };
 
+/* Keep struct pipe within a single 4 KiB pmm page. */
+#define PIPE_BUF_SIZE 2048
+
+/* A unidirectional byte stream with reader/writer endpoint counts.  The buffer
+ * is a ring; readers see EOF once all writers close and writers get EPIPE once
+ * all readers close. */
+struct pipe {
+  char buf[PIPE_BUF_SIZE];
+  uint32_t r;
+  uint32_t w;
+  uint32_t count;
+  int readers;
+  int writers;
+};
+
 struct file {
-  enum { FD_NONE, FD_INODE, FD_DEVICE } type;
+  enum { FD_NONE, FD_INODE, FD_DEVICE, FD_PIPE } type;
   int ref;
   int readable;
   int writable;
   struct inode *ip;
   uint32_t off;
+  struct pipe *pipe; /* FD_PIPE only */
 };
 
 struct devsw {
@@ -121,5 +137,8 @@ struct file *fdget(struct file **fds, int fd);
 void fdclose(struct file **fds, int fd);
 void fd_init(struct file **fds);
 void fd_fork(struct file **parent, struct file **child);
+
+/* Create a pipe and hand back its two endpoints (refcount 1 each). */
+int vfs_pipe(struct file **readf, struct file **writef);
 
 #endif

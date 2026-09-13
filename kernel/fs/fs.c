@@ -5,6 +5,7 @@
  */
 
 #include "fs.h"
+#include "pmm.h"
 #include "string.h"
 #include <stdint.h>
 
@@ -43,16 +44,42 @@ void fileclose(struct file *f) {
     return;
   if (--f->ref > 0)
     return;
+  if (f->type == FD_PIPE && f->pipe) {
+    if (f->writable && f->pipe->writers > 0)
+      f->pipe->writers--;
+    if (f->readable && f->pipe->readers > 0)
+      f->pipe->readers--;
+    if (f->pipe->readers == 0 && f->pipe->writers == 0)
+      pmm_free((uint32_t)(uintptr_t)f->pipe);
+  }
   if (f->ip && f->ip->nlink == 0)
     ifree(f->ip);
   f->type = FD_NONE;
   f->ip = 0;
+  f->pipe = 0;
   f->off = 0;
 }
 
 int fileread(struct file *f, void *buf, int n) {
   if (!f || !f->readable || n < 0)
     return -1;
+  if (f->type == FD_PIPE) {
+    struct pipe *p = f->pipe;
+    if (!p)
+      return -1;
+    if (p->count == 0)
+      return p->writers > 0 ? -EAGAIN : 0; /* would block, or EOF */
+    uint32_t take = (uint32_t)n;
+    if (take > p->count)
+      take = p->count;
+    uint32_t first = PIPE_BUF_SIZE - p->r;
+    if (take > first)
+      take = first;
+    kmemcpy(buf, p->buf + p->r, take);
+    p->r = (p->r + take) % PIPE_BUF_SIZE;
+    p->count -= take;
+    return (int)take;
+  }
   if (f->type == FD_DEVICE) {
     struct devsw *d = &devsw[f->ip->major];
     if (!d->read)
@@ -71,6 +98,26 @@ int fileread(struct file *f, void *buf, int n) {
 int filewrite(struct file *f, const void *buf, int n) {
   if (!f || !f->writable || n < 0)
     return -1;
+  if (f->type == FD_PIPE) {
+    struct pipe *p = f->pipe;
+    if (!p)
+      return -1;
+    if (p->readers == 0)
+      return -EPIPE;
+    if (p->count >= PIPE_BUF_SIZE)
+      return -EAGAIN; /* would block */
+    uint32_t space = PIPE_BUF_SIZE - p->count;
+    uint32_t take = (uint32_t)n;
+    if (take > space)
+      take = space;
+    uint32_t first = PIPE_BUF_SIZE - p->w;
+    if (take > first)
+      take = first;
+    kmemcpy(p->buf + p->w, buf, take);
+    p->w = (p->w + take) % PIPE_BUF_SIZE;
+    p->count += take;
+    return (int)take;
+  }
   if (f->type == FD_DEVICE) {
     struct devsw *d = &devsw[f->ip->major];
     if (!d->write)
@@ -576,4 +623,37 @@ void fd_init(struct file **fds) {
 void fd_fork(struct file **parent, struct file **child) {
   for (int i = 0; i < FD_MAX; i++)
     child[i] = parent[i] ? filedup(parent[i]) : 0;
+}
+
+int vfs_pipe(struct file **readf, struct file **writef) {
+  struct pipe *p = (struct pipe *)(uintptr_t)pmm_alloc();
+  if (!p)
+    return -ENOMEM;
+  kmemset(p, 0, sizeof(*p));
+  p->readers = 1;
+  p->writers = 1;
+
+  struct file *rf = filealloc();
+  struct file *wf = filealloc();
+  if (!rf || !wf) {
+    if (rf)
+      fileclose(rf);
+    if (wf)
+      fileclose(wf);
+    pmm_free((uint32_t)(uintptr_t)p);
+    return -ENFILE;
+  }
+
+  rf->type = FD_PIPE;
+  rf->pipe = p;
+  rf->readable = 1;
+  rf->writable = 0;
+  wf->type = FD_PIPE;
+  wf->pipe = p;
+  wf->readable = 0;
+  wf->writable = 1;
+
+  *readf = rf;
+  *writef = wf;
+  return 0;
 }
