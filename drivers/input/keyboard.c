@@ -46,6 +46,7 @@ static const char shift_map[128] = {
 };
 
 static volatile int shift = 0;
+static volatile int ctrl = 0;
 
 __attribute__((interrupt)) void
 keyboard_handler(struct interrupt_frame *frame) {
@@ -55,6 +56,8 @@ keyboard_handler(struct interrupt_frame *frame) {
     uint8_t sc = scancode & 0x7F;
     if (sc == 0x2A || sc == 0x36)
       shift = 0;
+    if (sc == 0x1D)
+      ctrl = 0;
   } else {
     // key press
     if (scancode == 0x2A || scancode == 0x36) {
@@ -62,8 +65,17 @@ keyboard_handler(struct interrupt_frame *frame) {
       pic_eoi(1);
       return;
     }
+    if (scancode == 0x1D) {
+      ctrl = 1;
+      pic_eoi(1);
+      return;
+    }
     const char *map = shift ? shift_map : scancode_map;
     char c = (scancode < 128) ? map[scancode] : 0;
+    // Ctrl+<key> produces the corresponding control character (^C -> 0x03,
+    // ^D -> 0x04, ^Z -> 0x1A, ...).
+    if (ctrl && c)
+      c = (char)(c & 0x1F);
     if (c)
       kb_buf_push(c);
   }
