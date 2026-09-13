@@ -54,6 +54,14 @@ void pmm_init(multiboot_info_t *mbi) {
 }
 
 /*
+ * Roving allocation hint.  Scanning the bitmap from 0 on every allocation is
+ * O(used_pages) per call, which makes fork/exec (hundreds of allocations)
+ * quadratic once /bin has been unpacked into memory.  Start where the last
+ * allocation stopped instead.
+ */
+static uint32_t pmm_hint = 0;
+
+/*
  * pmm_alloc - Allocate a single physical page
  *
  * Scans bitmap for first free page and marks it as used.
@@ -66,9 +74,15 @@ uint32_t pmm_alloc() {
    * 返回的物理页会被内核作为普通指针访问（页表、TSS 的 esp0 栈等）。
    * 因而不能分配到 vmm_init 尚未恒等映射的高端物理内存。
    */
-  for (uint32_t i = 0; i < PMM_IDENTITY_MAPPED_LIMIT / PAGE_SIZE; i++) {
-    if (!(bitmap[i / 8] & (1 << (i % 8)))) {
-      bitmap[i / 8] |= (1 << (i % 8));
+  const uint32_t total = PMM_IDENTITY_MAPPED_LIMIT / PAGE_SIZE;
+
+  for (uint32_t n = 0; n < total; n++) {
+    uint32_t i = pmm_hint;
+    if (++pmm_hint >= total)
+      pmm_hint = 0;
+    uint8_t mask = (uint8_t)(1u << (i & 7));
+    if (!(bitmap[i >> 3] & mask)) {
+      bitmap[i >> 3] |= mask;
       return i * PAGE_SIZE;
     }
   }
@@ -77,7 +91,7 @@ uint32_t pmm_alloc() {
 
 void pmm_free(uint32_t addr) {
   uint32_t page = addr / PAGE_SIZE;
-  bitmap[page / 8] &= ~(1 << (page % 8));
+  bitmap[page >> 3] &= (uint8_t)~(1u << (page & 7));
 }
 
 /*
@@ -91,7 +105,7 @@ void pmm_mark_free(uint32_t start, uint32_t length) {
   uint32_t page = start / PAGE_SIZE;
   uint32_t count = length / PAGE_SIZE;
   for (uint32_t i = page; i < page + count; i++)
-    bitmap[i / 8] &= ~(1 << (i % 8));
+    bitmap[i >> 3] &= (uint8_t)~(1u << (i & 7));
 }
 
 /*
@@ -106,5 +120,5 @@ void pmm_mark_used(uint32_t start, uint32_t length) {
   uint32_t page = start / PAGE_SIZE;
   uint32_t count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
   for (uint32_t i = page; i < page + count; i++)
-    bitmap[i / 8] |= (1 << (i % 8));
+    bitmap[i >> 3] |= (uint8_t)(1u << (i & 7));
 }
