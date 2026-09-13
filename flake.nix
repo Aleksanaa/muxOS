@@ -40,6 +40,12 @@
         helloLd = ./ports/mlibc/hello.ld;
       };
 
+      neatvi = pkgs.callPackage ./nix/pkgs/neatvi {
+        cross = linuxCross;
+        inherit mlibc;
+        helloLd = ./ports/mlibc/hello.ld;
+      };
+
       muxos = pkgs.callPackage ./nix/pkgs/muxos {
         inherit buildTools;
         src = self;
@@ -53,6 +59,10 @@
           {
             name = "sh";
             path = "${mrsh}/bin/sh";
+          }
+          {
+            name = "vi";
+            path = "${neatvi}/bin/vi";
           }
         ];
         applets = toybox.toys;
@@ -86,6 +96,7 @@
         hello = hello;
         toybox = toybox;
         mrsh = mrsh;
+        neatvi = neatvi;
       };
 
       apps.${system} = {
