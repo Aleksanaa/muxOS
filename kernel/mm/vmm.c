@@ -17,7 +17,10 @@
 static uint32_t kernel_pdir[1024] __attribute__((aligned(4096)));
 
 #define PDIR_ENTRIES 1024
-#define KERNEL_PDES 32 /* 32 * 4 MiB = 128 MiB identity-mapped */
+/* Identity-mapped kernel region.  64 * 4 MiB = 256 MiB, matching
+ * PMM_IDENTITY_MAPPED_LIMIT: pmm_alloc() only hands out pages the kernel can
+ * dereference, and the embedded /bin image plus its memfs copy need >128 MiB. */
+#define KERNEL_PDES 64
 
 static inline uint32_t *pdir_ptr(uint32_t phys) {
   return (uint32_t *)(uintptr_t)phys;

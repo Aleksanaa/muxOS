@@ -58,7 +58,7 @@
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''
         exec ${pkgs.qemu}/bin/qemu-system-i386 \
-          -m 256M \
+          -m 512M \
           -cdrom ${iso}/muxos.iso \
           "$@"
       '';
