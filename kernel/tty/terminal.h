@@ -23,3 +23,7 @@ void terminal_reset(void);
 /* Line discipline mode (TTY_* bits). */
 int terminal_mode(void);
 void terminal_set_mode(int mode);
+
+/* Copy the text on the current row before the cursor (e.g. a shell prompt) so
+ * the line discipline can redraw it after a clear.  Returns the length. */
+int terminal_snapshot_line(char *buf, int max);

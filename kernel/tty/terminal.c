@@ -420,3 +420,21 @@ void terminal_write(const char *buf, int n) {
 int terminal_mode(void) { return lflag; }
 
 void terminal_set_mode(int mode) { lflag = mode; }
+
+int terminal_snapshot_line(char *buf, int max) {
+  if (!ready) {
+    if (max > 0)
+      buf[0] = 0;
+    return 0;
+  }
+  int n = cx;
+  if (n > max - 1)
+    n = max - 1;
+  for (int x = 0; x < n; x++) {
+    uint16_t cell = vga[cy * COLS + x];
+    char c = (char)(cell & 0xFF);
+    buf[x] = c ? c : ' ';
+  }
+  buf[n] = 0;
+  return n;
+}

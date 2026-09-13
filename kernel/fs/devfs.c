@@ -58,11 +58,26 @@ static int console_read(void *buf, int n) {
     return i;
   }
 
+  /* Remember what is on this row before the cursor (the shell prompt) so ^L
+   * can clear and redraw the line without losing it. */
+  char prefix[80];
+  int plen = terminal_snapshot_line(prefix, sizeof(prefix));
+
   while (i < n) {
     int from_kb = 0;
     char c = console_getchar_src(&from_kb);
     if (c == '\r')
       c = '\n';
+    if (c == 0x0C) { /* ^L: clear screen, then repaint prompt + line so far */
+      clear_screen();
+      if (plen > 0)
+        print(prefix, 0x07);
+      for (int j = 0; j < i; j++) {
+        char s[2] = {b[j], 0};
+        print(s, 0x07);
+      }
+      continue;
+    }
     if (c == '\x03') { /* ^C: interrupt the foreground group */
       int fg = foreground_pgid;
       process_kill(fg ? -fg : (int)processes[current].pid, SIGINT);
