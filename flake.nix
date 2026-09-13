@@ -43,17 +43,19 @@
       muxos = pkgs.callPackage ./nix/pkgs/muxos {
         inherit buildTools;
         src = self;
-        programs =
-          map (t: {
-            name = t;
-            path = "${toybox}/bin/${t}";
-          }) toybox.toys
-          ++ [
-            {
-              name = "sh";
-              path = "${mrsh}/bin/sh";
-            }
-          ];
+        # One multicall toybox binary; the applet names become hardlinks in
+        # /bin at boot (see kernel/fs/memfs.c).
+        programs = [
+          {
+            name = "toybox";
+            path = "${toybox}/bin/toybox";
+          }
+          {
+            name = "sh";
+            path = "${mrsh}/bin/sh";
+          }
+        ];
+        applets = toybox.toys;
       };
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''

@@ -307,6 +307,7 @@ void fs_init(void) {
     dirlink(bin, ".", bin->inum);
     dirlink(bin, "..", ROOTINO);
     root->nlink++;
+    struct inode *toybox = 0;
     for (uint32_t i = 0; i < embedded_program_count; i++) {
       const struct embedded_program *p = &embedded_programs[i];
       uint32_t size = (uint32_t)(p->end - p->start);
@@ -316,6 +317,15 @@ void fs_init(void) {
       if (size > MAXFILE)
         size = MAXFILE;
       writei(f, p->start, 0, size);
+      if (kstrcmp(p->name, "toybox") == 0)
+        toybox = f;
+    }
+    /* Every applet name is a hardlink to the one multicall binary. */
+    if (toybox) {
+      for (uint32_t i = 0; i < embedded_applet_count; i++) {
+        if (dirlink(bin, embedded_applets[i], toybox->inum) == 0)
+          toybox->nlink++;
+      }
     }
   }
 

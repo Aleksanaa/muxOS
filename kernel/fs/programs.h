@@ -16,4 +16,11 @@ struct embedded_program {
 extern const struct embedded_program embedded_programs[];
 extern const uint32_t embedded_program_count;
 
+/*
+ * Names that are hardlinked to the multicall "toybox" program in /bin.  toybox
+ * dispatches on argv[0], so one embedded binary serves every applet.
+ */
+extern const char *const embedded_applets[];
+extern const uint32_t embedded_applet_count;
+
 #endif

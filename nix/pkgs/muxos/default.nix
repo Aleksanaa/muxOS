@@ -1,10 +1,12 @@
-{ stdenv, lib, buildTools, src, programs ? [] }:
+{ stdenv, lib, buildTools, src, programs ? [], applets ? [] }:
 
 let
   # Each program is embedded in the kernel image and copied into /bin at boot.
   programsArg = lib.concatStringsSep " " (
     map (p: "${p.name}=${p.path}") programs
   );
+  # Names hardlinked to the multicall "toybox" binary in /bin.
+  appletsArg = lib.concatStringsSep " " applets;
 in
 stdenv.mkDerivation {
   pname = "muxos";
@@ -18,7 +20,9 @@ stdenv.mkDerivation {
   '';
 
   buildPhase = ''
-    make ${lib.optionalString (programsArg != "") "PROGRAMS=\"${programsArg}\""}
+    make \
+      ${lib.optionalString (programsArg != "") "PROGRAMS=\"${programsArg}\""} \
+      ${lib.optionalString (appletsArg != "") "APPLETS=\"${appletsArg}\""}
   '';
 
   installPhase = ''

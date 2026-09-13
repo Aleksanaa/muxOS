@@ -136,21 +136,37 @@ stdenv.mkDerivation {
     export LDFLAGS="-m32 -nostdlib -static -T ${helloLd} ${mlibc}/usr/lib/crt1.o -L${mlibc}/usr/lib -lc -lgcc"
   '';
 
+  # Build one multicall "toybox" binary that dispatches on argv[0].  The kernel
+  # embeds it once and creates the per-applet /bin entries as hardlinks, which
+  # keeps the image small (a per-applet build repeats the runtime/lib in each
+  # binary).  The enabled-applet set is chosen the same way scripts/single.sh
+  # does it, but the multiplexer is kept instead of disabled.
   buildPhase = ''
     runHook preBuild
     mkdir -p generated
-    scripts/single.sh ${lib.concatStringsSep " " toys}
+    export KCONFIG_CONFIG=.config
+    make allnoconfig
+    sed -i 's/# CONFIG_TOYBOX is not set/CONFIG_TOYBOX=y/' .config
+
+    for i in ${lib.concatStringsSep " " toys}; do
+      TOYFILE="$(grep -l "TOY($i[ ,]" toys/*/*.c | head -1)"
+      NAME="$(echo "$i" | tr a-z- A-Z_)"
+      DEPENDS="$({ sed -n "/^config *$i\$/,/^\$/{s/^[ \t]*depends on //;T;s/[!][A-Z0-9_]*//g;s/ *&& */|/g;p}" "$TOYFILE"; } | xargs | tr ' ' '|')"
+      sed -ri -e "s/# (CONFIG_($NAME|''${NAME}_.*''${DEPENDS:+|$DEPENDS})) is not set/\1=y/" .config
+    done
+
+    make oldconfig < /dev/null
+    export OUTNAME=toybox
+    bash scripts/make.sh
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/bin"
-    for t in ${lib.concatStringsSep " " toys}; do
-      cp "$t" "$out/bin/$t"
-      chmod u+w "$out/bin/$t"
-      ${strip} -s "$out/bin/$t"
-    done
+    cp toybox "$out/bin/toybox"
+    chmod u+w "$out/bin/toybox"
+    ${strip} -s "$out/bin/toybox"
     runHook postInstall
   '';
 

@@ -31,6 +31,8 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_C_SRCS)) \
 # pairs.  Each is embedded in the kernel image with .incbin and exposed via
 # the table in kernel/fs/programs.h.
 PROGRAMS     ?=
+# Applet names hardlinked to the single multicall "toybox" program in /bin.
+APPLETS      ?=
 GEN_PROGRAMS := $(BUILD)/programs.S
 KERNEL_OBJS  += $(BUILD)/programs.o
 
@@ -68,6 +70,14 @@ $(GEN_PROGRAMS): FORCE
 	    printf '.Lpname%d:\n.asciz "%s"\n' $$i "$$n"; \
 	    printf '.Lpstart%d:\n.incbin "%s"\n.Lpend%d:\n' $$i "$$f" $$i; \
 	    i=$$((i+1)); \
+	  done; \
+	  printf '.global embedded_applet_count\nembedded_applet_count:\n.long %d\n' $(words $(APPLETS)); \
+	  printf '.global embedded_applets\nembedded_applets:\n'; \
+	  i=0; for a in $(APPLETS); do \
+	    printf '.long .Lapp%d\n' $$i; i=$$((i+1)); \
+	  done; \
+	  i=0; for a in $(APPLETS); do \
+	    printf '.Lapp%d:\n.asciz "%s"\n' $$i "$$a"; i=$$((i+1)); \
 	  done; \
 	} > $@
 
