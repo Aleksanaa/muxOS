@@ -74,7 +74,9 @@ struct MuxosSysdepTags :
 	Dup,
 	Dup2,
 	Fcntl,
-	Pipe
+	Pipe,
+	Sleep,
+	Uname
 {};
 
 template<typename Tag>

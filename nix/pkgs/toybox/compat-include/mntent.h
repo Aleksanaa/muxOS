@@ -13,8 +13,6 @@ struct mntent {
   int mnt_passno;
 };
 
-struct mntent *getmntent(FILE *stream);
-FILE *setmntent(const char *filename, const char *type);
-int endmntent(FILE *stream);
+/* The functions themselves are stubbed out via macros in compat.h. */
 
 #endif

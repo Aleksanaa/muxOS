@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <time.h>
 #include <termios.h>
@@ -66,6 +67,44 @@ ssize_t xattr_lset(const char *path, const char *name, const void *value,
                    size_t size, int flags);
 ssize_t xattr_fset(int fd, const char *name, const void *value, size_t size,
                    int flags);
+
+/* No mount table or statfs on muxOS. */
+struct mntent;
+static inline struct mntent *muxos_getmntent_unsupported(FILE *stream) {
+  (void)stream;
+  return 0;
+}
+static inline FILE *muxos_setmntent_unsupported(const char *filename,
+                                                const char *type) {
+  (void)filename;
+  (void)type;
+  return 0;
+}
+static inline int muxos_endmntent_unsupported(FILE *stream) {
+  (void)stream;
+  return 1;
+}
+#define getmntent(f) muxos_getmntent_unsupported(f)
+#define setmntent(f, t) muxos_setmntent_unsupported(f, t)
+#define endmntent(f) muxos_endmntent_unsupported(f)
+
+static inline int muxos_statfs_unsupported(const char *path,
+                                           struct statfs *buf) {
+  (void)path;
+  (void)buf;
+  errno = ENOSYS;
+  return -1;
+}
+#define statfs(p, b) muxos_statfs_unsupported(p, b)
+
+/* No inotify on muxOS; toybox's portable wrappers fall back to polling. */
+static inline int muxos_inotify_unsupported(void) {
+  errno = ENOSYS;
+  return -1;
+}
+#define inotify_init(...) muxos_inotify_unsupported()
+#define inotify_add_watch(...) muxos_inotify_unsupported()
+#define inotify_rm_watch(...) muxos_inotify_unsupported()
 
 #ifndef ECHOCTL
 #define ECHOCTL 0x200

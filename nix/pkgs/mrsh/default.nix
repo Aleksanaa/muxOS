@@ -30,6 +30,8 @@ stdenv.mkDerivation {
   ];
 
   dontConfigure = true;
+  dontPatchELF = true;
+  dontStrip = true;
 
   buildPhase = ''
     runHook preBuild

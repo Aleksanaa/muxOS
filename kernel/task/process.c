@@ -626,10 +626,8 @@ int process_sigaction(int sig, const void *act, void *old) {
 }
 
 int process_kill(int pid, int sig) {
-  if (sig <= 0 || sig >= 64)
+  if (sig < 0 || sig >= 64)
     return -EINVAL;
-  if (sig >= 32)
-    return 0; /* ignored */
   process_t *me = &processes[current];
   int sent = 0;
 
@@ -645,7 +643,9 @@ int process_kill(int pid, int sig) {
     else
       match = (t->pgid == (uint32_t)(-pid));
     if (match) {
-      t->sig_pending |= (1u << sig);
+      /* sig == 0 is the existence check; >= 32 (e.g. SIGCANCEL) is ignored. */
+      if (sig > 0 && sig < 32)
+        t->sig_pending |= (1u << sig);
       sent = 1;
     }
   }

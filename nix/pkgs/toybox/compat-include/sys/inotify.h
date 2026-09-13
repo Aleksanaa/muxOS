@@ -26,8 +26,6 @@ struct inotify_event {
 #define IN_MOVE_SELF     0x00000800
 #define IN_ALL_EVENTS    0x00000fff
 
-int inotify_init(void);
-int inotify_add_watch(int fd, const char *path, uint32_t mask);
-int inotify_rm_watch(int fd, int wd);
+/* The functions themselves are stubbed out via macros in compat.h. */
 
 #endif

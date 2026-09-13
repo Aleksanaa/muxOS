@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/times.h>
+#include <sys/utsname.h>
 #include <termios.h>
 
 /* Linux i386 ioctl request numbers (mlibc does not ship sys/ioctl.h). */
@@ -300,6 +301,16 @@ int Sysdeps<Times>::operator()(struct tms *tms, clock_t *out) {
 	return 0;
 }
 
+int Sysdeps<Uname>::operator()(struct utsname *buf) {
+	memset(buf, 0, sizeof(*buf));
+	strcpy(buf->sysname, "muxOS");
+	strcpy(buf->nodename, "muxos");
+	strcpy(buf->release, "0.0.1");
+	strcpy(buf->version, "muxOS");
+	strcpy(buf->machine, "i686");
+	return 0;
+}
+
 pid_t Sysdeps<GetPid>::operator()() {
 	long r = syscall(KSYS_GETPID);
 	return (pid_t)(r < 0 ? 0 : r);
@@ -340,6 +351,19 @@ int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags,
 int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
 	(void)mode;
 	*old = 0;
+	return 0;
+}
+
+int Sysdeps<Sleep>::operator()(time_t *secs, long *nanos) {
+	/* The timer runs at 1000 Hz, so a tick is a millisecond. */
+	long ms = 0;
+	if (secs)
+		ms += (long)(*secs) * 1000;
+	if (nanos)
+		ms += *nanos / 1000000;
+	if (ms < 1)
+		ms = 1;
+	syscall(KSYS_SLEEP, ms);
 	return 0;
 }
 
@@ -385,18 +409,28 @@ int Sysdeps<Execve>::operator()(const char *path, char *const argv[],
 
 int Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_size,
 		ssize_t *length) {
-	(void)path;
 	(void)buffer;
 	(void)max_size;
 	(void)length;
-	/* No symlinks yet. */
-	return ENOENT;
+	/* No symlinks: EINVAL means "exists but is not a symlink", which is what
+	 * realpath()/xabspath() rely on to fall back to stat(). */
+	struct muxos_stat ks;
+	long r = syscall(KSYS_STAT, path, &ks);
+	if (r < 0)
+		return (int)-r;
+	return EINVAL;
 }
 
 int Sysdeps<Readlinkat>::operator()(int dirfd, const char *path, void *buffer,
 		size_t max_size, ssize_t *length) {
-	(void)dirfd;
-	return Sysdeps<Readlink>::operator()(path, buffer, max_size, length);
+	(void)buffer;
+	(void)max_size;
+	(void)length;
+	struct muxos_stat ks;
+	long r = syscall(KSYS_STATAT, dirfd, path, &ks);
+	if (r < 0)
+		return (int)-r;
+	return EINVAL;
 }
 
 int Sysdeps<Access>::operator()(const char *path, int mode) {

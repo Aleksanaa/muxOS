@@ -24,7 +24,7 @@ let
     rev = "0.8.14";
     hash = "sha256-46iKwUSIQ4M9ZL86e4rY4hGcz8y06HZMC0mvNp3jR1s=";
   };
-  # Filesystem-related applets worth having as standalone binaries.
+  # Filesystem, text and process applets worth having as standalone binaries.
   toys = [
     "hello"
     "echo"
@@ -42,6 +42,63 @@ let
     "ln"
     "true"
     "false"
+    # text processing
+    "grep"
+    "sed"
+    "head"
+    "tail"
+    "sort"
+    "uniq"
+    "cut"
+    "tr"
+    "tee"
+    "cmp"
+    "seq"
+    "yes"
+    "basename"
+    "dirname"
+    "printf"
+    "rev"
+    # filesystem helpers
+    "chmod"
+    "stat"
+    "du"
+    "realpath"
+    "readlink"
+    "mktemp"
+    # process / environment
+    "kill"
+    "sleep"
+    "env"
+    "test"
+    "xargs"
+    "which"
+    "timeout"
+    "uname"
+    "id"
+    "whoami"
+    # more text / data
+    "expr"
+    "date"
+    "od"
+    "strings"
+    "split"
+    "comm"
+    "paste"
+    "tac"
+    "nl"
+    "fold"
+    "base64"
+    "md5sum"
+    "sha256sum"
+    "diff"
+    "file"
+    "more"
+    # archives / disk
+    "tar"
+    "gzip"
+    "dd"
+    "install"
   ];
 in
 stdenv.mkDerivation {

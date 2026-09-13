@@ -275,6 +275,25 @@ void fs_init(void) {
     create(dev, "null", T_DEVICE, NULL_MAJOR);
   }
 
+  /* /etc/passwd + /etc/group so getpwuid()/id/whoami work. */
+  struct inode *etc = create(root, "etc", T_DIR, 0);
+  if (etc) {
+    etc->nlink = 2;
+    dirlink(etc, ".", etc->inum);
+    dirlink(etc, "..", ROOTINO);
+    root->nlink++;
+    struct inode *pw = create(etc, "passwd", T_FILE, 0);
+    if (pw) {
+      const char *s = "root:x:0:0:root:/:/bin/sh\n";
+      writei(pw, s, 0, kstrlen(s));
+    }
+    struct inode *gr = create(etc, "group", T_FILE, 0);
+    if (gr) {
+      const char *s = "root:x:0:\n";
+      writei(gr, s, 0, kstrlen(s));
+    }
+  }
+
   struct inode *hello = create(root, "hello", T_FILE, 0);
   if (hello) {
     const char *msg = "Hello from the muxOS memfs!\n";
