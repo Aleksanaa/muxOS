@@ -5,7 +5,11 @@
  * host directory attached with QEMU's -virtfs is presented as a normal
  * struct inode subtree: directory listings are materialised into the memfs
  * dirent format so the existing getdents/dirlookup paths work unchanged, and
- * file contents are fetched on demand with Tread.
+ * file contents are read/written on demand with Tread/Twrite.
+ *
+ * Each inode keeps an *unopened* fid so it can be cloned (Twalk with no
+ * names) for directory reads; each open file description clones it again and
+ * opens the clone with its own access mode, so opens do not interfere.
  */
 
 #include "9p.h"
@@ -14,6 +18,8 @@
 #include "string.h"
 #include "vga.h"
 
+/* Fids are handed out monotonically and not recycled; the inode table caps
+ * how many can be outstanding, and QEMU's fid pool is large. */
 static uint32_t next_fid = 1;
 
 /* Scratch buffer for a directory read: walking each entry issues further RPCs
@@ -81,21 +87,51 @@ static int clunk(uint32_t fid) {
   return v9p_rpc(&tx, &rx);
 }
 
-int v9p_readi(struct inode *ip, void *dst, uint32_t off, uint32_t n) {
+/* 9P open-mode bits. */
+#define P9_OREAD 0
+#define P9_OWRITE 1
+#define P9_ORDWR 2
+#define P9_OTRUNC 0x10
+#define P9_DMDIR 0x80000000u
+
+/*
+ * Clone the inode's (unopened) fid and open the clone with the mode implied
+ * by the VFS flags.  Each open file description gets its own fid, so a
+ * write-only open cannot break a later read of the same inode.
+ */
+int v9p_open_file(struct inode *ip, int flags, uint32_t *out_fid) {
+  int acc = flags & O_ACCMODE;
+  int mode = (acc == O_WRONLY) ? P9_OWRITE
+           : (acc == O_RDWR) ? P9_ORDWR
+                             : P9_OREAD;
+  uint32_t nf;
+
+  if (ip->fid == NOFID)
+    return -1;
+  if (walk(ip->fid, 0, &nf, 0) < 0)
+    return -1;
+  if (flags & O_TRUNC)
+    mode |= P9_OTRUNC;
+
+  if (open_fid(nf, mode) < 0) {
+    /* Read-only host file opened for writing: fall back to read-only. */
+    if (mode == P9_OREAD || open_fid(nf, P9_OREAD) < 0) {
+      clunk(nf);
+      return -1;
+    }
+  }
+  *out_fid = nf;
+  return 0;
+}
+
+int v9p_file_read(uint32_t fid, void *dst, uint32_t off, uint32_t n) {
   Fcall rx;
   uint32_t max = v9p_get_msize() - IOHDRSZ;
   int r;
 
-  if (ip->fid == NOFID)
-    return 0;
-  if (!ip->fid_opened) {
-    if (open_fid(ip->fid, 0) < 0)
-      return -1;
-    ip->fid_opened = 1;
-  }
   if (n > max)
     n = max;
-  r = read_raw(ip->fid, off, n, &rx);
+  r = read_raw(fid, off, n, &rx);
   if (r < 0)
     return -1;
   if ((uint32_t)r > n)
@@ -103,6 +139,174 @@ int v9p_readi(struct inode *ip, void *dst, uint32_t off, uint32_t n) {
   if (r > 0)
     kmemcpy(dst, rx.data, (uint32_t)r);
   return r;
+}
+
+int v9p_file_write(uint32_t fid, const void *src, uint32_t off, uint32_t n) {
+  Fcall tx, rx;
+  uint32_t max = v9p_get_msize() - IOHDRSZ;
+
+  if (n > max)
+    n = max;
+  kmemset(&tx, 0, sizeof(tx));
+  tx.type = Twrite;
+  tx.fid = fid;
+  tx.offset = (vlong)off;
+  tx.count = n;
+  tx.data = (char *)src;
+  if (v9p_rpc(&tx, &rx) < 0)
+    return -1;
+  return (int)rx.count;
+}
+
+int v9p_close(uint32_t fid) { return fid ? clunk(fid) : 0; }
+
+int v9p_truncate(uint32_t fid, uint32_t size) {
+  Dir d;
+  Fcall tx, rx;
+  uchar stat[STATFIXLEN]; /* an all-empty Dir encodes to exactly this */
+  uint n;
+
+  /* Twstat: only `length` is meaningful; every other field is the
+   * "do not change" sentinel (all ones / empty string). */
+  kmemset(&d, 0, sizeof(d));
+  d.type = 0xFFFF;
+  d.dev = 0xFFFFFFFFu;
+  d.qid.type = 0xFF;
+  d.qid.vers = 0xFFFFFFFFu;
+  d.qid.path = ~(uvlong)0;
+  d.mode = 0xFFFFFFFFu;
+  d.atime = 0xFFFFFFFFu;
+  d.mtime = 0xFFFFFFFFu;
+  d.length = (vlong)size;
+
+  n = convD2M(&d, stat, sizeof(stat));
+  if (n == 0)
+    return -1;
+
+  kmemset(&tx, 0, sizeof(tx));
+  tx.type = Twstat;
+  tx.fid = fid;
+  tx.nstat = (ushort)n;
+  tx.stat = stat;
+  if (v9p_rpc(&tx, &rx) < 0)
+    return -1;
+  return 0;
+}
+
+/*
+ * Create a file (Tcreate on a *clone* of the parent fid, since Tcreate turns
+ * its fid argument into the new file).  Returns the new inode, or 0.
+ */
+struct inode *v9p_create(struct inode *dp, const char *name, int flags) {
+  Fcall tx, rx;
+  uint32_t cfid;
+  int acc = flags & O_ACCMODE;
+  int omode = (acc == O_WRONLY) ? P9_OWRITE
+            : (acc == O_RDWR) ? P9_ORDWR
+                              : P9_OREAD;
+  struct inode *ip;
+
+  if (dp->fid == NOFID || walk(dp->fid, 0, &cfid, 0) < 0) {
+    fs_errno = EIO;
+    return 0;
+  }
+  if (flags & O_TRUNC)
+    omode |= P9_OTRUNC;
+
+  kmemset(&tx, 0, sizeof(tx));
+  tx.type = Tcreate;
+  tx.fid = cfid;
+  tx.name = (char *)name;
+  tx.perm = 0644;
+  tx.mode = (uchar)omode;
+  tx.ext = "";
+  if (v9p_rpc(&tx, &rx) < 0) {
+    clunk(cfid);
+    fs_errno = EACCES;
+    return 0;
+  }
+
+  ip = ialloc(T_FILE, 0, 0);
+  if (!ip) {
+    clunk(cfid);
+    fs_errno = ENOSPC;
+    return 0;
+  }
+  /* Tcreate opened cfid as the new file; drop it and hold an unopened fid,
+   * so each open() can clone it with its own mode. */
+  clunk(cfid);
+  ip->backend = INODE_9P;
+  ip->parent = dp->inum;
+  ip->fid = NOFID;
+  {
+    uint32_t nf;
+    if (walk(dp->fid, name, &nf, 0) == 0)
+      ip->fid = nf;
+  }
+  ip->size = 0;
+  ip->mode = MODE_FILE;
+  dirlink(dp, name, ip->inum);
+  return ip;
+}
+
+int v9p_mkdir(struct inode *dp, const char *name, uint16_t mode) {
+  Fcall tx, rx;
+  uint32_t cfid, nf;
+  struct inode *ip;
+
+  if (dp->fid == NOFID || walk(dp->fid, 0, &cfid, 0) < 0)
+    return -1;
+
+  kmemset(&tx, 0, sizeof(tx));
+  tx.type = Tcreate;
+  tx.fid = cfid;
+  tx.name = (char *)name;
+  tx.perm = P9_DMDIR | (mode & 0777);
+  tx.mode = P9_OREAD;
+  tx.ext = "";
+  if (v9p_rpc(&tx, &rx) < 0) {
+    clunk(cfid);
+    return -1;
+  }
+  /* Tcreate opened cfid as the new directory; drop it and take a fresh,
+   * unopened fid so the directory can later be walked. */
+  clunk(cfid);
+
+  ip = ialloc(T_DIR, 0, 0);
+  if (!ip)
+    return -1;
+  ip->backend = INODE_9P;
+  ip->parent = dp->inum;
+  ip->mode = MODE_DIR;
+  ip->size = 0;
+  ip->fid = NOFID;
+  if (walk(dp->fid, name, &nf, 0) == 0)
+    ip->fid = nf;
+  dirlink(dp, name, ip->inum);
+  return 0;
+}
+
+int v9p_remove(struct inode *dp, const char *name) {
+  Fcall tx, rx;
+  uint32_t fid;
+  uint32_t inum;
+  struct inode *ip;
+
+  if (dp->fid == NOFID || walk(dp->fid, name, &fid, 0) < 0)
+    return -1;
+
+  kmemset(&tx, 0, sizeof(tx));
+  tx.type = Tremove;
+  tx.fid = fid;
+  if (v9p_rpc(&tx, &rx) < 0)
+    return -1; /* Tremove clunks the fid server-side even on failure */
+
+  inum = (uint32_t)dirlookup(dp, name, 0);
+  dirunlink(dp, name);
+  ip = inum ? iget(inum) : 0;
+  if (ip)
+    ifree(ip);
+  return 0;
 }
 
 int v9p_loaddir(struct inode *ip) {
@@ -114,10 +318,8 @@ int v9p_loaddir(struct inode *ip) {
 
   /* Set before dirlink() so nested dirlookup() calls do not reload. */
   ip->dir_loaded = 1;
-  if (ip->fid == NOFID) {
-    print("[9P] loaddir: no fid\n", 0x0C);
+  if (ip->fid == NOFID)
     return -1;
-  }
   if (!dirbuf) {
     dirbuf_size = v9p_get_msize();
     dirbuf = (uchar *)(uintptr_t)pmm_alloc_contig(dirbuf_size / PAGE_SIZE);
@@ -243,7 +445,6 @@ int v9p_mount(const char *path) {
   ip->fid = 0;
   ip->parent = ROOTINO;
   ip->dir_loaded = 0;
-  ip->fid_opened = 0;
   ip->mode = MODE_DIR;
   ip->size = 0;
 

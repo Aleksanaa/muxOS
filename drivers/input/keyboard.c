@@ -56,6 +56,7 @@ static void kb_push_str(const char *s) {
 
 __attribute__((interrupt)) void
 keyboard_handler(struct interrupt_frame *frame) {
+  (void)frame;
   uint8_t scancode = inb(0x60);
   if (scancode & 0x80) { // 按下
     // key release: check if shift released

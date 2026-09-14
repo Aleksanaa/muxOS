@@ -48,11 +48,10 @@ struct inode {
 
   /* 9p-backed inode state.  `fid` is the 9P fid for this file; directories
    * keep theirs unopened (so it can be walked) and read a clone. */
-  int backend;       /* INODE_MEM or INODE_9P */
-  uint32_t fid;      /* 9P fid, NOFID when not yet associated */
-  uint32_t parent;   /* inum of the parent directory (for "..") */
-  int dir_loaded;    /* 9p directory listing has been fetched */
-  int fid_opened;    /* 9P fid has been Topen'd for I/O */
+  int backend;      /* INODE_MEM or INODE_9P */
+  uint32_t fid;     /* 9P fid, kept *unopened* so it can be cloned */
+  uint32_t parent;  /* inum of the parent directory (for "..") */
+  int dir_loaded;   /* 9p directory listing has been fetched */
 };
 
 /* Keep struct pipe within a single 4 KiB pmm page. */
@@ -78,6 +77,9 @@ struct file {
   struct inode *ip;
   uint32_t off;
   struct pipe *pipe; /* FD_PIPE only */
+  /* Per-open 9p handle.  A file's *inode* fid stays unopened so it can be
+   * cloned; each open clones it and opens the clone with its own mode. */
+  uint32_t v9p_fid;
 };
 
 struct devsw {
@@ -156,6 +158,13 @@ int vfs_pipe(struct file **readf, struct file **writef);
 /* 9p-backed filesystem glue (9p_client.c). */
 int v9p_mount(const char *path);
 int v9p_loaddir(struct inode *ip);
-int v9p_readi(struct inode *ip, void *dst, uint32_t off, uint32_t n);
+int v9p_open_file(struct inode *ip, int flags, uint32_t *out_fid);
+int v9p_file_read(uint32_t fid, void *dst, uint32_t off, uint32_t n);
+int v9p_file_write(uint32_t fid, const void *src, uint32_t off, uint32_t n);
+int v9p_close(uint32_t fid);
+int v9p_truncate(uint32_t fid, uint32_t size);
+struct inode *v9p_create(struct inode *dp, const char *name, int flags);
+int v9p_mkdir(struct inode *dp, const char *name, uint16_t mode);
+int v9p_remove(struct inode *dp, const char *name);
 
 #endif

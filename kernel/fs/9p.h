@@ -83,6 +83,7 @@ typedef struct Fcall {
       u32int perm;  /* Tcreate */
       char *name;   /* Tcreate */
       uchar mode;   /* Tcreate, Topen */
+      char *ext;    /* 9P2000.u Tcreate: extension string */
     };
     struct {
       u32int newfid;         /* Twalk */
@@ -194,10 +195,8 @@ enum {
 uint sizeS2M(Fcall *f);
 uint convS2M(Fcall *f, uchar *ap, uint nap);
 uint convM2S(uchar *ap, uint nap, Fcall *f);
-uint sizeD2M(Dir *d);
 uint convD2M(Dir *d, uchar *buf, uint nbuf);
 uint convM2D(uchar *buf, uint nbuf, Dir *d, char *strs);
-int statcheck(uchar *buf, uint nbuf);
 
 /* virtio-9p transport + client (drivers/virtio/virtio_9p.c). */
 int v9p_init(void);

@@ -52,12 +52,15 @@ void fileclose(struct file *f) {
     if (f->pipe->readers == 0 && f->pipe->writers == 0)
       pmm_free((uint32_t)(uintptr_t)f->pipe);
   }
+  if (f->v9p_fid)
+    v9p_close(f->v9p_fid);
   if (f->ip && f->ip->nlink == 0)
     ifree(f->ip);
   f->type = FD_NONE;
   f->ip = 0;
   f->pipe = 0;
   f->off = 0;
+  f->v9p_fid = 0;
 }
 
 int fileread(struct file *f, void *buf, int n) {
@@ -87,7 +90,11 @@ int fileread(struct file *f, void *buf, int n) {
     return d->read(buf, n);
   }
   if (f->type == FD_INODE) {
-    int r = readi(f->ip, buf, f->off, (uint32_t)n);
+    int r;
+    if (f->ip->backend == INODE_9P)
+      r = v9p_file_read(f->v9p_fid, buf, f->off, (uint32_t)n);
+    else
+      r = readi(f->ip, buf, f->off, (uint32_t)n);
     if (r > 0)
       f->off += (uint32_t)r;
     return r;
@@ -125,9 +132,14 @@ int filewrite(struct file *f, const void *buf, int n) {
     return d->write(buf, n);
   }
   if (f->type == FD_INODE) {
-    if (f->ip && f->ip->backend == INODE_9P)
-      return -EROFS;
-    int r = writei(f->ip, buf, f->off, (uint32_t)n);
+    int r;
+    if (f->ip && f->ip->backend == INODE_9P) {
+      r = v9p_file_write(f->v9p_fid, buf, f->off, (uint32_t)n);
+      if (r > 0 && f->off + (uint32_t)r > f->ip->size)
+        f->ip->size = f->off + (uint32_t)r;
+    } else {
+      r = writei(f->ip, buf, f->off, (uint32_t)n);
+    }
     if (r > 0)
       f->off += (uint32_t)r;
     return r;
@@ -148,8 +160,12 @@ int filetruncate(struct file *f, uint32_t size) {
     return -1;
   }
   if (f->ip->backend == INODE_9P) {
-    fs_errno = EROFS;
-    return -1;
+    if (v9p_truncate(f->v9p_fid, size) < 0) {
+      fs_errno = EIO;
+      return -1;
+    }
+    f->ip->size = size;
+    return 0;
   }
   if (itruncate(f->ip, size) < 0) {
     fs_errno = EFBIG;
@@ -346,11 +362,11 @@ struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
         return 0;
       }
       ip = iget(inum);
-    } else {
-      if (dp->backend == INODE_9P) {
-        fs_errno = EROFS; /* creating files on the host tree is not supported */
+    } else if (dp->backend == INODE_9P) {
+      ip = v9p_create(dp, name, flags);
+      if (!ip)
         return 0;
-      }
+    } else {
       ip = ialloc(T_FILE, 0, 0);
       if (!ip) {
         fs_errno = ENOSPC;
@@ -368,11 +384,7 @@ struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
       return 0;
   }
 
-  if ((flags & O_TRUNC) && ip->type == T_FILE) {
-    if (ip->backend == INODE_9P) {
-      fs_errno = EROFS;
-      return 0;
-    }
+  if ((flags & O_TRUNC) && ip->type == T_FILE && ip->backend != INODE_9P) {
     if (itruncate(ip, 0) < 0) {
       fs_errno = EIO;
       return 0;
@@ -394,6 +406,16 @@ struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
   f->readable = !(flags & O_WRONLY);
   f->writable = (flags & (O_WRONLY | O_RDWR)) != 0;
   f->off = (flags & O_APPEND) ? ip->size : 0;
+
+  if (ip->backend == INODE_9P && ip->type == T_FILE) {
+    if (v9p_open_file(ip, flags, &f->v9p_fid) < 0) {
+      fileclose(f);
+      fs_errno = EACCES;
+      return 0;
+    }
+    if (flags & O_TRUNC)
+      ip->size = 0;
+  }
   return f;
 }
 
@@ -407,8 +429,11 @@ int vfs_mkdir_at(struct inode *base, const char *path) {
   if (!dp)
     return -1;
   if (dp->backend == INODE_9P) {
-    fs_errno = EROFS;
-    return -1;
+    if (v9p_mkdir(dp, name, MODE_DIR) < 0) {
+      fs_errno = EACCES;
+      return -1;
+    }
+    return 0;
   }
   if (dirlookup(dp, name, 0)) {
     fs_errno = EEXIST;
@@ -439,8 +464,11 @@ int vfs_unlink_at(struct inode *base, const char *path) {
   if (!dp)
     return -1;
   if (dp->backend == INODE_9P) {
-    fs_errno = EROFS;
-    return -1;
+    if (v9p_remove(dp, name) < 0) {
+      fs_errno = EACCES;
+      return -1;
+    }
+    return 0;
   }
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
   if (!inum) {
@@ -466,8 +494,11 @@ int vfs_rmdir_at(struct inode *base, const char *path) {
   if (!dp)
     return -1;
   if (dp->backend == INODE_9P) {
-    fs_errno = EROFS;
-    return -1;
+    if (v9p_remove(dp, name) < 0) {
+      fs_errno = EACCES;
+      return -1;
+    }
+    return 0;
   }
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
   if (!inum) {

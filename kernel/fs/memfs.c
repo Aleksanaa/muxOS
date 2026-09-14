@@ -77,11 +77,9 @@ static uint32_t bmap(struct inode *ip, uint32_t bn) {
 }
 
 int readi(struct inode *ip, void *dst, uint32_t off, uint32_t n) {
-  /* 9p files are read from the host; 9p directories are served from the
-   * memfs-format listing v9p_loaddir() built. */
-  if (ip->backend == INODE_9P && ip->type != T_DIR)
-    return v9p_readi(ip, dst, off, n);
-
+  /* 9p files are read per open-file description (see fileread), and 9p
+   * directories are served from the memfs-format listing v9p_loaddir()
+   * built, so everything reaching here is memfs-backed. */
   if (off > ip->size)
     return 0;
   if (off + n > ip->size)

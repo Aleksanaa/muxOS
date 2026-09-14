@@ -89,6 +89,6 @@ struct multiboot_mmap_entry {
 
 typedef struct multiboot_mmap_entry multiboot_memory_map_t;
 
-void panic(const char *message);
+__attribute__((noreturn)) void panic(const char *message);
 
 #endif

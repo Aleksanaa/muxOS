@@ -235,15 +235,19 @@ int v9p_rpc(Fcall *tx, Fcall *rx) {
   vq_last_used++;
   (void)inb(io_base + VIRTIO_PCI_ISR);
 
-  if (rlen < 9)
+  /* The smallest 9P message (Rclunk/Rremove/Rflush) is 7 bytes. */
+  if (rlen < 7)
     return -1;
 
   /* 9P2000.u extends Rerror with a trailing 4-byte errcode, which the
    * stock convM2S rejects; extract the message by hand. */
   if (v9p_resp[4] == Rerror) {
-    uint16_t elen = (uint16_t)(v9p_resp[7] | (v9p_resp[8] << 8));
-    if (9 + (int)elen > (int)rlen)
-      elen = (uint16_t)(rlen - 9);
+    uint16_t elen = 0;
+    if (rlen >= 9) {
+      elen = (uint16_t)(v9p_resp[7] | (v9p_resp[8] << 8));
+      if (9 + (int)elen > (int)rlen)
+        elen = (uint16_t)(rlen - 9);
+    }
     if (elen > sizeof(v9p_err) - 1)
       elen = sizeof(v9p_err) - 1;
     kmemcpy(v9p_err, v9p_resp + 9, elen);

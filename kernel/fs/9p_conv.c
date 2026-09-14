@@ -101,6 +101,7 @@ uint sizeS2M(Fcall *f) {
     n += stringsz(f->name);
     n += BIT32SZ;
     n += BIT8SZ;
+    n += stringsz(f->ext); /* 9P2000.u extension */
     break;
 
   case Tread:
@@ -268,6 +269,7 @@ uint convS2M(Fcall *f, uchar *ap, uint nap) {
     p += BIT32SZ;
     PBIT8(p, f->mode);
     p += BIT8SZ;
+    p = pstring(p, f->ext); /* 9P2000.u extension */
     break;
 
   case Tread:
@@ -375,7 +377,7 @@ uint convS2M(Fcall *f, uchar *ap, uint nap) {
   case Rwstat:
     break;
   }
-  if (size != p - ap)
+  if (size != (uint)(p - ap))
     return 0;
   return size;
 }
@@ -678,23 +680,6 @@ uint convM2S(uchar *ap, uint nap, Fcall *f) {
   return 0;
 }
 
-uint sizeD2M(Dir *d) {
-  char *sv[4];
-  int i, ns;
-
-  sv[0] = d->name;
-  sv[1] = d->uid;
-  sv[2] = d->gid;
-  sv[3] = d->muid;
-
-  ns = 0;
-  for (i = 0; i < 4; i++)
-    if (sv[i])
-      ns += kstrlen(sv[i]);
-
-  return STATFIXLEN + ns;
-}
-
 uint convD2M(Dir *d, uchar *buf, uint nbuf) {
   uchar *p, *ebuf;
   char *sv[4];
@@ -727,7 +712,7 @@ uint convD2M(Dir *d, uchar *buf, uint nbuf) {
   PBIT16(p, ss - BIT16SZ);
   p += BIT16SZ;
 
-  if (ss > nbuf)
+  if ((uint)ss > nbuf)
     return BIT16SZ;
 
   PBIT16(p, d->type);
@@ -764,29 +749,6 @@ uint convD2M(Dir *d, uchar *buf, uint nbuf) {
     return 0;
 
   return p - buf;
-}
-
-int statcheck(uchar *buf, uint nbuf) {
-  uchar *ebuf;
-  int i;
-
-  ebuf = buf + nbuf;
-
-  if (nbuf < STATFIXLEN || nbuf != BIT16SZ + GBIT16(buf))
-    return -1;
-
-  buf += STATFIXLEN - 4 * BIT16SZ;
-
-  for (i = 0; i < 4; i++) {
-    if (buf + BIT16SZ > ebuf)
-      return -1;
-    buf += BIT16SZ + GBIT16(buf);
-  }
-
-  if (buf != ebuf)
-    return -1;
-
-  return 0;
 }
 
 static char nullstring[] = "";
