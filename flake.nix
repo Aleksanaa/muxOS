@@ -46,6 +46,12 @@
         helloLd = ./ports/mlibc/hello.ld;
       };
 
+      sfm = pkgs.callPackage ./nix/pkgs/sfm {
+        cross = linuxCross;
+        inherit mlibc;
+        helloLd = ./ports/mlibc/hello.ld;
+      };
+
       muxos = pkgs.callPackage ./nix/pkgs/muxos {
         inherit buildTools;
         src = self;
@@ -63,6 +69,10 @@
           {
             name = "vi";
             path = "${neatvi}/bin/vi";
+          }
+          {
+            name = "sfm";
+            path = "${sfm}/bin/sfm";
           }
         ];
         applets = toybox.toys;
@@ -101,6 +111,7 @@
         toybox = toybox;
         mrsh = mrsh;
         neatvi = neatvi;
+        sfm = sfm;
       };
 
       apps.${system} = {

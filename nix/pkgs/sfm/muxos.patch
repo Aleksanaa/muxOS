@@ -1,0 +1,109 @@
+diff --git a/sfm.c b/sfm.c
+index 8628d00..c8637c4 100644
+--- a/sfm.c
++++ b/sfm.c
+@@ -1,6 +1,13 @@
+ /* See LICENSE file for copyright and license details. */
+ 
+-#if defined(__linux__)
++#if defined(SFM_NO_WATCH)
++	/* muxOS: no inotify/kqueue; filesystem auto-refresh is disabled and the
++	 * panes are refreshed with the bound refresh key instead. */
++	#include <sys/types.h>
++	#define OFF_T      "%lld"
++	#define M_TIME     st_mtim
++
++#elif defined(__linux__)
+ 	#define _GNU_SOURCE
+ 	#include <sys/inotify.h>
+ 	#include <sys/types.h>
+@@ -50,7 +57,9 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <grp.h>
++#ifndef SFM_NO_WATCH
+ #include <pthread.h>
++#endif
+ #include <pwd.h>
+ #include <signal.h>
+ #include <stdarg.h>
+@@ -80,6 +89,12 @@ static int mode;
+ static void
+ log_to_file(const char *func, int line, const char *format, ...)
+ {
++#ifdef SFM_NO_WATCH
++	(void)func;
++	(void)line;
++	(void)format;
++	return;
++#endif
+ 	pid_t pid = getpid();
+ 	FILE *logfile = fopen("/tmp/sfm.log", "a");
+ 	if (logfile) {
+@@ -1456,6 +1471,17 @@ erealloc(void *p, size_t len)
+ 	return p;
+ }
+ 
++#ifdef SFM_NO_WATCH
++__attribute__((unused)) static void *event_handler(void *arg)
++{
++	(void)arg;
++	return NULL;
++}
++static void add_watch(Pane *pane) { (void)pane; }
++static void remove_watch(Pane *pane) { (void)pane; }
++static void cleanup_filesystem_events(void) { }
++static void filesystem_event_init(void) { }
++#else
+ #if defined(__linux__)
+ static void *
+ event_handler(void *arg)
+@@ -1695,6 +1721,7 @@ filesystem_event_init(void)
+ }
+ 
+ #endif
++#endif /* SFM_NO_WATCH */
+ 
+ static void
+ visual_mode(const Arg *arg)
+@@ -1849,11 +1876,6 @@ main(int argc, const char *argv[])
+ {
+ 	char c;
+ 
+-	if (remove("/tmp/sfm.log") != 0) {
+-		fprintf(stderr, "Error removing log file: %s\n",
+-			strerror(errno));
+-	}
+-
+ 	if (argc == 1) {
+ #if defined(__OpenBSD__)
+ 		if (pledge("cpath exec getpw proc rpath stdio tmppath tty wpath",
+diff --git a/sfm.h b/sfm.h
+index f38767c..fe4a33b 100644
+--- a/sfm.h
++++ b/sfm.h
+@@ -3,6 +3,9 @@
+ #ifndef SFM_H
+ #define SFM_H
+ 
++#include <stdint.h>
++#include <limits.h>
++
+ /* macros */
+ #define NORM   0
+ #define BOLD   1
+@@ -77,7 +80,13 @@ typedef struct {
+ 	ColorPair color;
+ } Entry;
+ 
+-#if defined(__linux__)
++#if defined(SFM_NO_WATCH)
++typedef struct {
++	char directory[PATH_MAX];
++	int fd;
++	int signal;
++} Watcher;
++#elif defined(__linux__)
+ typedef struct {
+ 	char directory[PATH_MAX];
+ 	pthread_t thread;
