@@ -12,11 +12,14 @@ ISO_DIR := $(BUILD)/isodir
 
 CPPFLAGS := -I. -Iarch/x86 -Iarch/x86/include \
             -Ikernel -Ikernel/lib -Ikernel/mm -Ikernel/task -Ikernel/fs -Ikernel/tty \
-            -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video
+            -Idrivers/input -Idrivers/platform -Idrivers/serial -Idrivers/video \
+            -Idrivers/bus -Idrivers/virtio
 CFLAGS   := -m32 -ffreestanding -fno-builtin -fno-pic -O0 -g \
             -Wall -Wextra -MMD -MP
 LDFLAGS  := -m32 -T linker.ld -ffreestanding -nostdlib
 QEMUFLAGS ?= -display cocoa,zoom-to-fit=on
+# Host directory shared with the guest as /root (virtio-9p).
+VIRTFS ?= -virtfs local,path=$(CURDIR),mount_tag=host0,security_model=none
 
 # The initial user process (and every other program) is a static ELF linked
 # against mlibc, built outside the kernel tree.  Each is embedded in the kernel
@@ -105,7 +108,7 @@ $(ISO): $(KERNEL)
 	$(GRUB_MKRESCUE) -o $@ $(ISO_DIR)
 
 run: $(ISO)
-	$(QEMU) $(QEMUFLAGS) -cdrom $(ISO)
+	$(QEMU) $(QEMUFLAGS) $(VIRTFS) -cdrom $(ISO)
 
 clean:
 	rm -rf $(BUILD)

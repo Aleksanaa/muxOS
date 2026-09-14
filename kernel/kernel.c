@@ -1,5 +1,6 @@
 // kernel.c
 #include "kernel.h"
+#include "9p.h"
 #include "fs.h"
 #include "gdt.h"
 #include "idt.h"
@@ -42,6 +43,8 @@ int kernel_main(uint32_t magic, multiboot_info_t *mbi) {
   keyboard_init();
   fs_init();
   fs_selftest();
+  if (v9p_init())
+    v9p_mount("/root");
   process_register_current();
   process_create_kernel(task_kernel_init);
 

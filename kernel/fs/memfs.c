@@ -77,6 +77,11 @@ static uint32_t bmap(struct inode *ip, uint32_t bn) {
 }
 
 int readi(struct inode *ip, void *dst, uint32_t off, uint32_t n) {
+  /* 9p files are read from the host; 9p directories are served from the
+   * memfs-format listing v9p_loaddir() built. */
+  if (ip->backend == INODE_9P && ip->type != T_DIR)
+    return v9p_readi(ip, dst, off, n);
+
   if (off > ip->size)
     return 0;
   if (off + n > ip->size)
@@ -157,6 +162,22 @@ static int namecmp(const char *a, const char *b) {
 }
 
 int dirlookup(struct inode *dp, const char *name, uint32_t *poff) {
+  if (dp->backend == INODE_9P) {
+    /* The host tree has no "." / ".." entries; synthesize them. */
+    if (kstrcmp(name, ".") == 0) {
+      if (poff)
+        *poff = 0;
+      return (int)dp->inum;
+    }
+    if (kstrcmp(name, "..") == 0) {
+      if (poff)
+        *poff = 0;
+      return (int)(dp->parent ? dp->parent : dp->inum);
+    }
+    if (!dp->dir_loaded)
+      v9p_loaddir(dp);
+  }
+
   struct dirent de;
   for (uint32_t off = 0; off < dp->size; off += sizeof(de)) {
     if (readi(dp, &de, off, sizeof(de)) != (int)sizeof(de))
@@ -299,6 +320,12 @@ void fs_init(void) {
     const char *msg = "Hello from the muxOS memfs!\n";
     writei(hello, msg, 0, kstrlen(msg));
   }
+
+  /* Mount point for the host directory passed via QEMU -virtfs.  v9p_mount()
+   * turns this into a 9p-backed directory if a device is present. */
+  struct inode *hostroot = create(root, "root", T_DIR, 0);
+  if (hostroot)
+    hostroot->nlink = 2;
 
   /* Copy every embedded program into /bin so the shell can exec it. */
   struct inode *bin = create(root, "bin", T_DIR, 0);

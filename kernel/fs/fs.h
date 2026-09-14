@@ -32,6 +32,10 @@
 #define CONSOLE_MAJOR 1
 #define NULL_MAJOR 2
 
+/* Which backend a struct inode is fulfilled by. */
+#define INODE_MEM 0
+#define INODE_9P 1
+
 struct inode {
   uint32_t inum;
   int type;
@@ -41,6 +45,14 @@ struct inode {
   uint16_t mode; /* permission bits, see MODE_* in fs_uapi.h */
   uint32_t size;
   uint32_t addrs[NDIRECT];
+
+  /* 9p-backed inode state.  `fid` is the 9P fid for this file; directories
+   * keep theirs unopened (so it can be walked) and read a clone. */
+  int backend;       /* INODE_MEM or INODE_9P */
+  uint32_t fid;      /* 9P fid, NOFID when not yet associated */
+  uint32_t parent;   /* inum of the parent directory (for "..") */
+  int dir_loaded;    /* 9p directory listing has been fetched */
+  int fid_opened;    /* 9P fid has been Topen'd for I/O */
 };
 
 /* Keep struct pipe within a single 4 KiB pmm page. */
@@ -140,5 +152,10 @@ void fd_fork(struct file **parent, struct file **child);
 
 /* Create a pipe and hand back its two endpoints (refcount 1 each). */
 int vfs_pipe(struct file **readf, struct file **writef);
+
+/* 9p-backed filesystem glue (9p_client.c). */
+int v9p_mount(const char *path);
+int v9p_loaddir(struct inode *ip);
+int v9p_readi(struct inode *ip, void *dst, uint32_t off, uint32_t n);
 
 #endif

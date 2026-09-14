@@ -69,9 +69,13 @@
       };
 
       runQemu = iso: pkgs.writeShellScriptBin "muxos-run" ''
+        # Expose a host directory to the guest as /root via virtio-9p.
+        # Override with MUXOS_SHARE=/some/dir.
+        share="''${MUXOS_SHARE:-$PWD}"
         exec ${pkgs.qemu}/bin/qemu-system-i386 \
           -m 512M \
           -cdrom ${iso}/muxos.iso \
+          -virtfs local,path="$share",mount_tag=host0,security_model=none \
           "$@"
       '';
     in

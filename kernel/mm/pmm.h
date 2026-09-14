@@ -8,6 +8,7 @@
 #define PMM_IDENTITY_MAPPED_LIMIT 0x10000000u
 void pmm_init(multiboot_info_t *mbi);
 uint32_t pmm_alloc();
+uint32_t pmm_alloc_contig(uint32_t pages);
 void pmm_free(uint32_t addr);
 void pmm_mark_used(uint32_t start, uint32_t length);
 void pmm_mark_free(uint32_t start, uint32_t length);

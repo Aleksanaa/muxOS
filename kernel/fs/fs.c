@@ -125,6 +125,8 @@ int filewrite(struct file *f, const void *buf, int n) {
     return d->write(buf, n);
   }
   if (f->type == FD_INODE) {
+    if (f->ip && f->ip->backend == INODE_9P)
+      return -EROFS;
     int r = writei(f->ip, buf, f->off, (uint32_t)n);
     if (r > 0)
       f->off += (uint32_t)r;
@@ -143,6 +145,10 @@ int filestat(struct file *f, struct stat *st) {
 int filetruncate(struct file *f, uint32_t size) {
   if (!f || !f->ip || f->type != FD_INODE) {
     fs_errno = EINVAL;
+    return -1;
+  }
+  if (f->ip->backend == INODE_9P) {
+    fs_errno = EROFS;
     return -1;
   }
   if (itruncate(f->ip, size) < 0) {
@@ -341,6 +347,10 @@ struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
       }
       ip = iget(inum);
     } else {
+      if (dp->backend == INODE_9P) {
+        fs_errno = EROFS; /* creating files on the host tree is not supported */
+        return 0;
+      }
       ip = ialloc(T_FILE, 0, 0);
       if (!ip) {
         fs_errno = ENOSPC;
@@ -359,11 +369,20 @@ struct file *vfs_open_at(struct inode *base, const char *path, int flags) {
   }
 
   if ((flags & O_TRUNC) && ip->type == T_FILE) {
+    if (ip->backend == INODE_9P) {
+      fs_errno = EROFS;
+      return 0;
+    }
     if (itruncate(ip, 0) < 0) {
       fs_errno = EIO;
       return 0;
     }
   }
+
+  /* Materialise a 9p directory's listing the first time it is opened, so a
+   * plain open()+getdents() sees its entries. */
+  if (ip->backend == INODE_9P && ip->type == T_DIR && !ip->dir_loaded)
+    v9p_loaddir(ip);
 
   struct file *f = filealloc();
   if (!f) {
@@ -387,6 +406,10 @@ int vfs_mkdir_at(struct inode *base, const char *path) {
   struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
+  if (dp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   if (dirlookup(dp, name, 0)) {
     fs_errno = EEXIST;
     return -1;
@@ -415,6 +438,10 @@ int vfs_unlink_at(struct inode *base, const char *path) {
   struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
+  if (dp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
   if (!inum) {
     fs_errno = ENOENT;
@@ -438,6 +465,10 @@ int vfs_rmdir_at(struct inode *base, const char *path) {
   struct inode *dp = nameiparentat(base, path, name);
   if (!dp)
     return -1;
+  if (dp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   uint32_t inum = (uint32_t)dirlookup(dp, name, 0);
   if (!inum) {
     fs_errno = ENOENT;
@@ -468,6 +499,10 @@ int vfs_rename_at(struct inode *obase, const char *oldpath,
   struct inode *odp = nameiparentat(obase, oldpath, oname);
   if (!odp)
     return -1;
+  if (odp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   uint32_t inum = (uint32_t)dirlookup(odp, oname, 0);
   if (!inum) {
     fs_errno = ENOENT;
@@ -476,6 +511,10 @@ int vfs_rename_at(struct inode *obase, const char *oldpath,
   struct inode *ndp = nameiparentat(nbase, newpath, nname);
   if (!ndp)
     return -1;
+  if (ndp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
 
   struct inode *ip = iget(inum);
   uint32_t existing = (uint32_t)dirlookup(ndp, nname, 0);
@@ -524,6 +563,10 @@ int vfs_link_at(struct inode *obase, const char *oldpath,
   struct inode *dp = nameiparentat(nbase, newpath, name);
   if (!dp)
     return -1;
+  if (dp->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   if (dirlookup(dp, name, 0)) {
     fs_errno = EEXIST;
     return -1;
@@ -544,6 +587,10 @@ int vfs_chmod_at(struct inode *base, const char *path, uint16_t mode) {
   struct inode *ip = nameiat(base, path);
   if (!ip)
     return -1;
+  if (ip->backend == INODE_9P) {
+    fs_errno = EROFS;
+    return -1;
+  }
   ip->mode = mode & 07777;
   return 0;
 }

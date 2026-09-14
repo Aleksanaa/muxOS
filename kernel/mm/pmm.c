@@ -89,6 +89,39 @@ uint32_t pmm_alloc() {
   PANIC("No free memory pages available");
 }
 
+/*
+ * pmm_alloc_contig - Allocate `pages` physically contiguous pages.
+ *
+ * The legacy virtio ring layout the device computes depends on the descriptor
+ * table, available ring and used ring living in one contiguous, page-aligned
+ * block, so single-page pmm_alloc() is not enough.  Scan the whole bitmap
+ * (called rarely, at device init) for a run of free pages.
+ *
+ * Returns the physical address of the first page, or 0 on failure.
+ */
+uint32_t pmm_alloc_contig(uint32_t pages) {
+  const uint32_t total = PMM_IDENTITY_MAPPED_LIMIT / PAGE_SIZE;
+  if (pages == 0 || pages > total)
+    return 0;
+
+  uint32_t run = 0, start = 0;
+  for (uint32_t i = 0; i < total; i++) {
+    uint8_t mask = (uint8_t)(1u << (i & 7));
+    if (!(bitmap[i >> 3] & mask)) {
+      if (run == 0)
+        start = i;
+      if (++run == pages) {
+        for (uint32_t j = start; j < start + pages; j++)
+          bitmap[j >> 3] |= (uint8_t)(1u << (j & 7));
+        return start * PAGE_SIZE;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return 0;
+}
+
 void pmm_free(uint32_t addr) {
   uint32_t page = addr / PAGE_SIZE;
   bitmap[page >> 3] &= (uint8_t)~(1u << (page & 7));
