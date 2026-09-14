@@ -133,7 +133,7 @@ static void fill_termios(struct termios *t) {
 }
 
 static void fill_winsize(struct winsize *w) {
-	w->ws_row = 24;
+	w->ws_row = 25; /* kernel console is 80x25 (see terminal.c) */
 	w->ws_col = 80;
 	w->ws_xpixel = 0;
 	w->ws_ypixel = 0;

@@ -415,6 +415,9 @@ void terminal_write(const char *buf, int n) {
     return;
   for (int i = 0; i < n; i++)
     lw_terminal_parser_read(parser, buf[i]);
+  /* A bare cursor-move (e.g. ESC[row;colH) changes cx/cy without drawing a
+   * cell, so refresh the hardware cursor here rather than only in putc(). */
+  set_cursor();
 }
 
 int terminal_mode(void) { return lflag; }
