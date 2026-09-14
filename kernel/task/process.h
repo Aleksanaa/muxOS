@@ -59,6 +59,7 @@ typedef struct {
 _Static_assert(sizeof(process_t) == 464, "update PROCESS_SIZE in switch.s");
 
 /* Signal numbers used by the kernel (match Linux/mlibc). */
+#define SIGSEGV 11
 #define SIGKILL 9
 #define SIGPIPE 13
 #define SIGALRM 14

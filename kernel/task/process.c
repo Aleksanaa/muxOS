@@ -34,7 +34,9 @@ static uint32_t alloc_pid(void) { return next_pid++; }
 extern void enter_usermode(uint32_t entry, uint32_t stack);
 
 #define USER_STACK_TOP 0x28000000u
-#define USER_STACK_PAGES 16u
+/* 64 pages = 256 KiB: TUI programs (sfm, vi, ...) plus libc need more than the
+ * old 64 KiB, which a single large stack frame could overflow. */
+#define USER_STACK_PAGES 64u
 
 void context_switch(context_t *old, context_t *new);
 void process_enter(context_t *old, context_t *new);

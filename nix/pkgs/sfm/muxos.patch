@@ -1,5 +1,5 @@
 diff --git a/sfm.c b/sfm.c
-index 8628d00..c8637c4 100644
+index 8628d00..7c05a57 100644
 --- a/sfm.c
 +++ b/sfm.c
 @@ -1,6 +1,13 @@
@@ -40,7 +40,39 @@ index 8628d00..c8637c4 100644
  	pid_t pid = getpid();
  	FILE *logfile = fopen("/tmp/sfm.log", "a");
  	if (logfile) {
-@@ -1456,6 +1471,17 @@ erealloc(void *p, size_t len)
+@@ -928,8 +943,6 @@ execute_command(Command *cmd)
+ {
+ 	size_t argc;
+ 	char **argv;
+-	char log_command[99024];
+-	size_t pos;
+ 	int wait_status;
+ 	int exit_status = 0;
+ 	int exit_errno = 0;
+@@ -942,22 +955,6 @@ execute_command(Command *cmd)
+ 
+ 	argv[argc - 1] = NULL;
+ 
+-	// Construct the command string for logging
+-	log_command[0] = '\0'; // Initialize the string with null terminator
+-	pos = 0;
+-	for (size_t i = 0; i < argc - 1; ++i) {
+-		if (argv[i] != NULL) {
+-			int len = snprintf(log_command + pos,
+-				sizeof(log_command) - pos, "%s ", argv[i]);
+-			if (len < 0 || pos + len >= sizeof(log_command)) {
+-				break; // Avoid buffer overflow
+-			}
+-			pos += len;
+-		}
+-	}
+-	log_command[sizeof(log_command) - 1] = '\0'; // Ensure null-termination
+-	log_to_file(__func__, __LINE__, "exec = %s", log_command);
+-
+ 	fork_pid = fork();
+ 	switch (fork_pid) {
+ 	case -1:
+@@ -1456,6 +1453,17 @@ erealloc(void *p, size_t len)
  	return p;
  }
  
@@ -58,7 +90,7 @@ index 8628d00..c8637c4 100644
  #if defined(__linux__)
  static void *
  event_handler(void *arg)
-@@ -1695,6 +1721,7 @@ filesystem_event_init(void)
+@@ -1695,6 +1703,7 @@ filesystem_event_init(void)
  }
  
  #endif
@@ -66,7 +98,7 @@ index 8628d00..c8637c4 100644
  
  static void
  visual_mode(const Arg *arg)
-@@ -1849,11 +1876,6 @@ main(int argc, const char *argv[])
+@@ -1849,11 +1858,6 @@ main(int argc, const char *argv[])
  {
  	char c;
  
